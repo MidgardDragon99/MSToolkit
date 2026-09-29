@@ -38,11 +38,11 @@ Nothing organization-specific is built in. Domains, OUs, tenant details and nami
 
 ### What the installer puts on the PC
 
-Everything below is installed to `C:\Program Files (x86)\MSToolkit`. The files MSToolkit runs from are also copied to `C:\ProgramData\MSToolkit`.
+Everything below is installed to `C:\Program Files (x86)\MSToolkit`, and MSToolkit runs from there. Only administrators can change that folder.
 
 | File | What it is |
 | --- | --- |
-| `MSToolkit.EXE` | Starts MSToolkit (the desktop shortcut points here). It refreshes the runtime copy of the scripts, then runs the launcher. |
+| `MSToolkit.EXE` | Starts MSToolkit (the desktop shortcut points here) by running `Launch-MSToolkit.bat` from the install folder. |
 | `MSToolkit.ps1` | The main console |
 | `Launch-MSToolkit.bat` | Asks for the admin account and starts the console |
 | `NewADUser.ps1` / `Launch-NewADUser.bat` | Create New AD User, and its standalone launcher |
@@ -55,7 +55,7 @@ Everything below is installed to `C:\Program Files (x86)\MSToolkit`. The files M
 | `M365-OneDrive-SharePoint-Tools.ps1` | OneDrive access, offboarding handover, deleted OneDrive restore and storage/sharing reports |
 | `M365-Teams-Block-Number.ps1` / `Launch-M365-Teams-Block-Number.cmd` | Teams inbound number blocking, and its standalone launcher |
 | `IntuneTools.ps1` | Intune and Entra device, app and policy management |
-| `Launcher.ps1` | Used by `MSToolkit.EXE` to refresh the runtime copy |
+| `Launcher.ps1` | The small script inside `MSToolkit.EXE` that starts `Launch-MSToolkit.bat` |
 | `MSToolkit.ico` / `MSToolkit.lnk` | Icon and shortcut |
 | `InstallMSToolkit.ps1` / `Launch-InstallMSToolkit.bat` | Copies of the installer script and its launcher. Not used day to day; to reinstall or repair, run `MSToolkit-Install.exe` again. |
 | `UninstallMSToolkit.ps1` / `Launch-UninstallMSToolkit.bat` | The uninstaller script used by the Apps & Features entry; the `.bat` runs it directly |
@@ -119,7 +119,7 @@ The installer asks no questions. Running it again later updates an existing inst
 | Item | Location |
 | --- | --- |
 | Program files | `C:\Program Files (x86)\MSToolkit` |
-| Runtime files (what actually runs) | `C:\ProgramData\MSToolkit` - local Users are given Modify rights so launches don't need elevation |
+| Logs and CSV reports | `C:\ProgramData\MSToolkit\Logs` - the only folder standard users can write to; nothing runs from it |
 | Desktop shortcut for all users | `C:\Users\Public\Desktop\MSToolkit.lnk` |
 | Apps & Features entry | **MSToolkit** (registry: `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSToolkit`) |
 
@@ -253,7 +253,7 @@ Uploading the uninstaller isn't required, because MSToolkit adds its own Apps & 
 
 ## 6. Uninstalling
 
-Any of these removes the program folder, the runtime folder, the desktop shortcut and the Apps & Features entry:
+Any of these removes the program folder, the logs folder (`C:\ProgramData\MSToolkit`), the desktop shortcut and the Apps & Features entry:
 
 | Method | Notes |
 | --- | --- |
@@ -285,7 +285,7 @@ Remove-Item -LiteralPath (Join-Path $env:APPDATA 'MSToolkit') -Recurse -Force
 
 Next time, press **Enter** at the prompt to reuse the remembered account, or type a different one.
 
-Two companion tools also have their own launchers in `C:\ProgramData\MSToolkit`, for use without the console:
+Two companion tools also have their own launchers in `C:\Program Files (x86)\MSToolkit`, for use without the console:
 
 - `Launch-NewADUser.bat` - Create New AD User
 - `Launch-M365-Teams-Block-Number.cmd` - Teams call blocking (runs as your normal Windows account)
@@ -568,7 +568,7 @@ Tabs: Packaging, Devices, Autopilot, Apps, Policies, Groups, Reports, Settings.
 | Location | Contents | Account |
 | --- | --- | --- |
 | `C:\Program Files (x86)\MSToolkit` | Installed program files, the uninstaller | All users |
-| `C:\ProgramData\MSToolkit` | Runtime copy of the scripts; `Logs` folder with logs and CSV reports | All users |
+| `C:\ProgramData\MSToolkit\Logs` | Logs and CSV reports. Users can write here; the rest of `C:\ProgramData\MSToolkit` is read-only for them. | All users |
 | `%APPDATA%\MSToolkit\settings.json` | Settings, theme, selected DC | Admin account |
 | `%APPDATA%\MSToolkit\m365-credential.xml`, `signin-auto.flag` | Remembered Microsoft 365 sign-in (encrypted) | Admin account |
 | `%APPDATA%\MSToolkit\launcher-admin-username.txt` | Admin username remembered by the launcher | Your Windows account |
@@ -592,7 +592,7 @@ Tabs: Packaging, Devices, Autopilot, Apps, Policies, Groups, Reports, Settings.
 | OneDrive / SharePoint won't connect | Check the admin URL is `https://<name>-admin.sharepoint.com` for your tenant and that your account has the SharePoint Administrator role. |
 | IntuneTools sign-in never returns | The loopback listener is blocked. Set **Sign-in method** to **Device code**. |
 | IntuneTools says a permission is missing | Add that Graph permission to the app registration and grant admin consent again ([11.2](#112-api-permissions)). |
-| Teams sign-in error `0x80070520` | Windows sign-in found no session for the account running the tool. Run `C:\ProgramData\MSToolkit\Launch-M365-Teams-Block-Number.cmd` as the Windows user signed in to the PC. |
+| Teams sign-in error `0x80070520` | Windows sign-in found no session for the account running the tool. Run `C:\Program Files (x86)\MSToolkit\Launch-M365-Teams-Block-Number.cmd` as the Windows user signed in to the PC. |
 | Old icon after an update | Windows caches icons. Sign out and back in, or run `ie4uinit.exe -show`. |
 
 ---
@@ -603,4 +603,5 @@ Tabs: Packaging, Devices, Autopilot, Apps, Policies, Groups, Reports, Settings.
 - The launcher remembers only a username, never a password.
 - IntuneTools uses delegated sign-in through your own single-tenant app registration, with no client secret. Actions run with the signed-in user's rights and appear in the Intune and Entra audit logs under that user.
 - Every change the tools make is confirmed first, naming the exact object and the effect.
+- Every script runs from `C:\Program Files (x86)\MSToolkit`, which only administrators can change, so a standard user on the PC can't alter code that later runs as the admin account. The only user-writable folder is `C:\ProgramData\MSToolkit\Logs`, and nothing runs from it.
 - Keep the admin account used for MSToolkit separate from your everyday account, and consider requiring app assignment for the IntuneTools registration ([11.3](#113-lock-the-app-down-recommended)).
