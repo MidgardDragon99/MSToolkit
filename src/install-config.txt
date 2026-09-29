@@ -1,5 +1,0 @@
-;!@Install@!UTF-8!
-Title="MSToolkit"
-GUIMode="2"
-RunProgram="install.cmd"
-;!@InstallEnd@!
