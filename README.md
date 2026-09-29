@@ -383,11 +383,21 @@ Settings are saved per Windows account in `%APPDATA%\MSToolkit\settings.json`. R
 | Service Accounts | Get Managed Service Accounts, Get Special Function Accounts |
 | Groups | Get Group, Get Group Members, Get Security Groups, Get Distribution Groups, Add User to Group, Remove User from Group, Create Group, Compare/Manage User Groups, Delete Group |
 | M365 | Block Teams Numbers, Exchange Online, Intune Tools, M365 Group Compare/Add, M365 Distro Compare/Add, M365 Conditional Access, OneDrive / SharePoint |
-| Computers | Get Computer, Get Computer OU, Enable Computer, Disable Computer, Delete Computer, Reset Computer Account |
+| Computers | Get Computer, Get Computer OU, Enable Computer, Disable Computer, Delete Computer, Reset Computer Account, Remove User From All Sessions |
 | OUs | Get Top-Level OUs, Get Employee / Computer / Server / Disabled OUs, Get All Common OUs, Create OU, Move Object to OU |
 | Reports | 90-Day Inactive Users, 90-Day Inactive Computers, Password Expiring Soon |
 
 Results appear in **Activity Output** (use **Copy Output** / **Clear Output**). Reports are also saved as CSV in the logs folder (`C:\ProgramData\MSToolkit\Logs`).
+
+### Remove User From All Sessions
+
+Logs one user off everywhere - for example when an account is compromised or a leaver must be signed out immediately.
+
+1. Enter the username (sAMAccountName). The account is resolved in AD first, so everything matches on the real account.
+2. MSToolkit scans every enabled Windows computer that has signed in to the domain in the last 30 days (console and Remote Desktop sessions, including RDS hosts). The scan is read-only; computers that don't answer on TCP 445 are listed as unreachable.
+3. The sessions found are listed, and a warning asks you to confirm before anything is logged off.
+
+Logging off loses any unsaved work in those sessions. The account itself is not disabled, locked or reset - disable it or reset its password separately if the user must stay out. Sessions on the PC running MSToolkit are never logged off if the target is your own admin or Windows account. Logging off remote sessions needs admin rights on those computers and Remote Desktop Services RPC access to them.
 
 ### Built-in protections
 

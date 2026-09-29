@@ -4593,6 +4593,245 @@ Continue with the reset?
     }
 }
 
+function Remove-ADUserFromAllSessions {
+    # Finds every Windows logon session (console and RDP, including RDS hosts) for
+    # one AD user across the domain's enabled Windows computers that logged on in
+    # the last 30 days, then - only after confirmation - logs them all off.
+    # The scan is read-only. The account itself is not changed: it is not disabled,
+    # locked or reset, so the user can sign in again straight away.
+    $UserName = Get-InputBox "Remove User From All Sessions" "Enter the username (sAMAccountName) to log off everywhere:"
+    if (-not $UserName) { return }
+
+    $ActiveDays = 30
+    $Threads    = 32
+    $TimeoutMs  = 800
+
+    Write-ResultSeparator
+
+    try {
+        $Server = Get-SelectedServer
+
+        # Resolve the real account first, so everything below matches on it and
+        # not on whatever was typed.
+        $User = Get-ADUser -Identity $UserName.Trim() -Server $Server -Properties SID,DisplayName,Enabled -ErrorAction Stop
+        $DomainName = (Get-ADDomain -Server $Server -ErrorAction Stop).NetBIOSName
+        $Sam = $User.SamAccountName
+        # quser truncates user names to 20 characters.
+        $Match = if ($Sam.Length -gt 20) { $Sam.Substring(0,20) } else { $Sam }
+
+        Write-OutputBox "Remove User From All Sessions" ([System.Drawing.Color]::FromArgb(31,58,93))
+        Write-OutputBox "Target : $DomainName\$Sam ($($User.DisplayName))"
+        Write-OutputBox "DN     : $($User.DistinguishedName)" ([System.Drawing.Color]::DimGray)
+        Write-OutputBox "SID    : $($User.SID)" ([System.Drawing.Color]::DimGray)
+        Write-OutputBox "Enabled: $($User.Enabled)" ([System.Drawing.Color]::DimGray)
+
+        # Never log off the session this console is running in. If the target is the
+        # account running MSToolkit or the one signed in to Windows here, sessions on
+        # this computer are left alone and reported instead.
+        $ProtectLocal = $false
+        $OwnSids = New-Object System.Collections.Generic.List[string]
+        $OwnSids.Add([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+        $WindowsUser = Get-MSToolkitSignedInWindowsUser
+        if ($WindowsUser) {
+            try {
+                $OwnSids.Add(([System.Security.Principal.NTAccount]$WindowsUser).Translate([System.Security.Principal.SecurityIdentifier]).Value)
+            }
+            catch { }
+        }
+        if ($OwnSids -contains $User.SID.Value) { $ProtectLocal = $true }
+
+        # Enabled Windows computers that have logged on recently.
+        $Cutoff = (Get-Date).AddDays(-$ActiveDays).ToFileTime()
+        $Computers = @(
+            Get-ADComputer `
+                -Filter "Enabled -eq 'True' -and OperatingSystem -like '*Windows*' -and LastLogonTimeStamp -ge $Cutoff" `
+                -Server $Server `
+                -ErrorAction Stop |
+                Select-Object -ExpandProperty Name |
+                Sort-Object
+        )
+
+        if ($Computers.Count -eq 0) {
+            Write-OutputBox "No enabled Windows computers have logged on in the last $ActiveDays days." ([System.Drawing.Color]::DarkOrange)
+            return
+        }
+
+        Write-OutputBox ""
+        Write-OutputBox "Scanning $($Computers.Count) computer(s) that logged on in the last $ActiveDays days. This is read-only..."
+
+        # Runs in its own runspace per computer: a quick TCP 445 check, then quser.
+        $Scan = {
+            param($Computer, $Match, $TimeoutMs)
+
+            $Tcp = New-Object System.Net.Sockets.TcpClient
+            try {
+                $Iar = $Tcp.BeginConnect($Computer, 445, $null, $null)
+                $Ok  = $Iar.AsyncWaitHandle.WaitOne($TimeoutMs) -and $Tcp.Connected
+            }
+            catch { $Ok = $false }
+            finally { $Tcp.Close() }
+
+            if (-not $Ok) {
+                return [pscustomobject]@{ Computer = $Computer; Status = 'Unreachable' }
+            }
+
+            # A 32-bit PowerShell sees System32 redirected, where quser does not exist.
+            $Quser = "$env:windir\System32\quser.exe"
+            if (-not (Test-Path $Quser)) { $Quser = "$env:windir\Sysnative\quser.exe" }
+
+            $Lines = & $Quser "/server:$Computer" 2>$null
+            $Found = $false
+
+            foreach ($Line in ($Lines | Select-Object -Skip 1)) {
+                if ($Line.Length -lt 2) { continue }
+                $Parts = $Line.Substring(1).Trim() -split '\s+'
+                if ($Parts[0] -ne $Match) { continue }
+
+                $IdIndex = -1
+                for ($i = 1; $i -lt $Parts.Count; $i++) {
+                    if ($Parts[$i] -match '^\d+$') { $IdIndex = $i; break }
+                }
+                if ($IdIndex -lt 0) { continue }
+
+                $Found = $true
+                [pscustomobject]@{
+                    Computer    = $Computer
+                    Status      = 'Found'
+                    SessionName = if ($IdIndex -eq 2) { $Parts[1] } else { '' }
+                    Id          = [int]$Parts[$IdIndex]
+                    State       = $Parts[$IdIndex + 1]
+                }
+            }
+
+            if (-not $Found) {
+                [pscustomobject]@{ Computer = $Computer; Status = 'NoSession' }
+            }
+        }
+
+        $Pool = [RunspaceFactory]::CreateRunspacePool(1, $Threads)
+        $Pool.Open()
+        $Jobs = New-Object System.Collections.Generic.List[object]
+        $Results = New-Object System.Collections.Generic.List[object]
+
+        try {
+            foreach ($Computer in $Computers) {
+                $Ps = [PowerShell]::Create()
+                $Ps.RunspacePool = $Pool
+                [void]$Ps.AddScript($Scan).AddArgument($Computer).AddArgument($Match).AddArgument($TimeoutMs)
+                $Jobs.Add([pscustomobject]@{ Ps = $Ps; Handle = $Ps.BeginInvoke() })
+            }
+
+            # Keep the window responsive while the scan runs.
+            $Done = 0
+            foreach ($Job in $Jobs) {
+                while (-not $Job.Handle.IsCompleted) {
+                    [System.Windows.Forms.Application]::DoEvents()
+                    Start-Sleep -Milliseconds 50
+                }
+                foreach ($R in $Job.Ps.EndInvoke($Job.Handle)) { $Results.Add($R) }
+                $Job.Ps.Dispose()
+                $Done++
+                if (($Done % 50) -eq 0 -and $Done -lt $Jobs.Count) {
+                    Write-OutputBox "  Scanned $Done of $($Jobs.Count)..." ([System.Drawing.Color]::DimGray)
+                }
+            }
+        }
+        finally {
+            $Pool.Close()
+            $Pool.Dispose()
+        }
+
+        $AllResults  = $Results.ToArray()
+        $Unreachable = @($AllResults | Where-Object { $_.Status -eq 'Unreachable' })
+        $Found       = @($AllResults | Where-Object { $_.Status -eq 'Found' })
+
+        $Skipped = @()
+        if ($ProtectLocal) {
+            $Skipped = @($Found | Where-Object { $_.Computer -ieq $env:COMPUTERNAME })
+            $Found   = @($Found | Where-Object { $_.Computer -ine $env:COMPUTERNAME })
+        }
+
+        Write-OutputBox ""
+        Write-OutputBox "Computers scanned: $($Computers.Count)   Reachable: $($Computers.Count - $Unreachable.Count)   Unreachable: $($Unreachable.Count)"
+        if ($Unreachable.Count -gt 0) {
+            Write-OutputBox "Unreachable (offline, firewalled or off-network - not checked): $((@($Unreachable | ForEach-Object { $_.Computer })) -join ', ')" ([System.Drawing.Color]::DarkOrange)
+        }
+        foreach ($S in $Skipped) {
+            Write-OutputBox "Left alone: session $($S.Id) on $($S.Computer) - this is the computer MSToolkit is running on." ([System.Drawing.Color]::DarkOrange)
+        }
+
+        if ($Found.Count -eq 0) {
+            Write-OutputBox "No sessions to log off for $DomainName\$Sam." ([System.Drawing.Color]::Green)
+            return
+        }
+
+        Write-OutputBox ""
+        Write-OutputBox "Sessions found for $DomainName\$Sam ($($Found.Count)):"
+        $SessionLines = New-Object System.Collections.Generic.List[string]
+        foreach ($S in $Found) {
+            $Line = "$($S.Computer) - session $($S.Id)" + $(if ($S.SessionName) { " ($($S.SessionName))" } else { "" }) + ", $($S.State)"
+            $SessionLines.Add($Line)
+            Write-OutputBox "  $Line"
+        }
+
+        $Shown = @($SessionLines.ToArray() | Select-Object -First 20)
+        $More  = $SessionLines.Count - $Shown.Count
+        $ListText = ($Shown | ForEach-Object { "  $_" }) -join "`r`n"
+        if ($More -gt 0) { $ListText += "`r`n  ...and $More more (listed in the output)" }
+
+        $ConfirmText = @"
+You are about to LOG OFF every session found for:
+
+User: $DomainName\$Sam ($($User.DisplayName))
+Distinguished Name: $($User.DistinguishedName)
+
+Sessions ($($Found.Count)):
+$ListText
+
+Any unsaved work in these sessions will be LOST. The account is not disabled or
+locked - the user can sign in again straight away.
+
+Log off all $($Found.Count) session(s) now?
+"@
+
+        $Confirm = [System.Windows.Forms.MessageBox]::Show(
+            $ConfirmText,
+            "Confirm Remove User From All Sessions",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Warning,
+            [System.Windows.Forms.MessageBoxDefaultButton]::Button2
+        )
+
+        if ($Confirm -ne [System.Windows.Forms.DialogResult]::Yes) {
+            Write-OutputBox "Cancelled - no sessions were logged off." ([System.Drawing.Color]::DarkOrange)
+            return
+        }
+
+        $LogoffExe = "$env:windir\System32\logoff.exe"
+        if (-not (Test-Path -LiteralPath $LogoffExe)) { $LogoffExe = "$env:windir\Sysnative\logoff.exe" }
+
+        $Ended = 0
+        Write-OutputBox ""
+        foreach ($S in $Found) {
+            [System.Windows.Forms.Application]::DoEvents()
+            & $LogoffExe $S.Id "/server:$($S.Computer)" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $Ended++
+                Write-OutputBox "Logged off: $($S.Computer) session $($S.Id)" ([System.Drawing.Color]::Red)
+            }
+            else {
+                Write-OutputBox "Logoff FAILED on $($S.Computer) session $($S.Id) (exit $LASTEXITCODE)" ([System.Drawing.Color]::DarkOrange)
+            }
+        }
+
+        Write-OutputBox ""
+        Write-OutputBox "Logged off $Ended of $($Found.Count) session(s) for $DomainName\$Sam using $Server." ([System.Drawing.Color]::Red)
+    }
+    catch {
+        Write-OutputBox "ERROR in Remove User From All Sessions: $($_.Exception.Message)" ([System.Drawing.Color]::Red)
+    }
+}
+
 function Disable-ADComputerAccount {
     $ComputerName = Get-InputBox "Disable AD Computer" "Enter computer name:"
     if (-not $ComputerName) { return }
@@ -6984,6 +7223,7 @@ Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "Enable Comp
 Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "Disable Computer" -Action { Disable-ADComputerAccount }
 Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "Delete Computer" -Action { Delete-ADComputerAccount } -ForeColor ([System.Drawing.Color]::Red)
 Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "Reset Computer Account" -Action { Reset-ADComputerAccount } -ForeColor ([System.Drawing.Color]::Red)
+Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "Remove User From All Sessions" -Action { Remove-ADUserFromAllSessions } -ForeColor ([System.Drawing.Color]::Red)
 
 $RightY += 8
 
