@@ -32,7 +32,9 @@ for %%F in (
   "Launch-UninstallMSToolkit.bat"
   "M365-Conditional-Access-User-Manager.ps1"
   "M365-Distribution-Group-Compare.ps1"
+  "M365-Exchange-Online-Tools.ps1"
   "M365-Group-Compare.ps1"
+  "M365-OneDrive-SharePoint-Tools.ps1"
   "M365-Teams-Block-Number.ps1"
   "NewADUser.ps1"
   "UninstallMSToolkit.ps1"
@@ -68,7 +70,9 @@ del /f /q MSToolkit-Install.7z MSToolkit-Install.exe MSToolkit-Uninstall.7z MSTo
   Launch-UninstallMSToolkit.bat ^
   M365-Conditional-Access-User-Manager.ps1 ^
   M365-Distribution-Group-Compare.ps1 ^
+  M365-Exchange-Online-Tools.ps1 ^
   M365-Group-Compare.ps1 ^
+  M365-OneDrive-SharePoint-Tools.ps1 ^
   M365-Teams-Block-Number.ps1 ^
   NewADUser.ps1 ^
   UninstallMSToolkit.ps1

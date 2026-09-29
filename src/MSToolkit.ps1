@@ -502,6 +502,7 @@ function Get-MSToolkitSettingDefaults {
         TenantId              = ""   # Entra tenant, used by the cloud tools
         ClientId              = ""   # app registration, used by the cloud tools
         ExpectedTenantDomain  = ""   # verified domain a cloud tool must see before it will change anything
+        SharePointAdminUrl    = ""   # SharePoint admin center address, used by OneDrive / SharePoint
     }
 }
 
@@ -973,6 +974,10 @@ function Apply-CurrentTheme {
     Apply-ThemeToControl -Control $form
 
     if ($ThemeToggleButton) {
+        # The header stays navy in both themes, so the toggle does too.
+        $ThemeToggleButton.BackColor = [System.Drawing.Color]::FromArgb(24,47,74)
+        $ThemeToggleButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(45,74,110)
+
         if ($script:ThemeMode -eq "Dark") {
             # Sun: click to go back to Light Mode.
             $ThemeToggleButton.Text = [string][char]0x263C
@@ -981,7 +986,7 @@ function Apply-CurrentTheme {
         else {
             # Moon: click to go to Dark Mode.
             $ThemeToggleButton.Text = [string][char]0x263E
-            $ThemeToggleButton.ForeColor = [System.Drawing.Color]::FromArgb(236,242,250)
+            $ThemeToggleButton.ForeColor = [System.Drawing.Color]::FromArgb(226,234,245)
         }
     }
 
@@ -2118,6 +2123,7 @@ function Show-MSToolkitSettings {
     Add-SettingsField -Key "TenantId"             -Caption "Tenant ID:"              -Hint "Optional. Directory (tenant) ID, a GUID, from the app registration's Overview page in the Microsoft Entra admin center. IntuneTools' Set to Org Defaults copies it in, and Teams Block Number signs in to this tenant and checks it matches. Leave blank to enter it in IntuneTools later; Teams Block Number then skips the check."
     Add-SettingsField -Key "ClientId"             -Caption "Client ID:"              -Hint "Optional. Application (client) ID of the app registration IntuneTools signs in through. Only IntuneTools uses it, via Set to Org Defaults; leave blank to enter it in IntuneTools later. No client secret is stored."
     Add-SettingsField -Key "ExpectedTenantDomain" -Caption "Expected tenant domain:" -Hint "A verified domain of your tenant, for example contoso.com. Teams Block Number compares it with the verified domains of the tenant you sign in to and stays read-only unless it is listed. Blank keeps changes disabled."
+    Add-SettingsField -Key "SharePointAdminUrl"   -Caption "SharePoint admin URL:"    -Hint "Optional. The SharePoint admin center address, for example https://contoso-admin.sharepoint.com. OneDrive / SharePoint fills its admin URL box with it. Blank uses https://<name>-admin.sharepoint.com built from the onmicrosoft domain above; if that is blank too, type it in the tool."
 
     $ButtonY = $SetForm.ClientSize.Height - 44
 
@@ -3407,6 +3413,36 @@ function Launch-M365GroupCompareScript {
 
 function Launch-M365DistributionGroupCompareScript {
     Start-MSToolkitM365Tool -ToolName "M365 Distro Compare/Add" -ScriptFile "M365-Distribution-Group-Compare.ps1"
+}
+
+function Get-MSToolkitSharePointAdminUrl {
+    # The SharePoint admin URL setting, or one built from the onmicrosoft domain
+    # (contoso.onmicrosoft.com -> https://contoso-admin.sharepoint.com), or "".
+    $Configured = Get-MSToolkitSetting -Name "SharePointAdminUrl"
+    if ($Configured) { return $Configured.TrimEnd('/') }
+
+    $OnMicrosoft = Get-MSToolkitSetting -Name "OnMicrosoftDomain"
+    if ($OnMicrosoft -match '^([A-Za-z0-9-]+)\.onmicrosoft\.com$') {
+        return "https://$($Matches[1])-admin.sharepoint.com"
+    }
+
+    return ""
+}
+
+function Launch-M365OneDriveTools {
+    # Runs as the signed-in user, whose profile cannot see this console's
+    # settings.json, so the admin URL is handed over at launch. It only pre-fills
+    # the tool's admin URL box.
+    $OneDriveArguments = ""
+
+    $AdminUrl = Get-MSToolkitSharePointAdminUrl
+    if ($AdminUrl) { $OneDriveArguments += " -AdminUrl `"$AdminUrl`"" }
+
+    Start-MSToolkitM365Tool -ToolName "OneDrive and SharePoint Tools" -ScriptFile "M365-OneDrive-SharePoint-Tools.ps1" -ExtraArguments $OneDriveArguments
+}
+
+function Launch-M365ExchangeOnlineTools {
+    Start-MSToolkitM365Tool -ToolName "Exchange Online Tools" -ScriptFile "M365-Exchange-Online-Tools.ps1"
 }
 
 function Launch-IntuneTools {
@@ -6642,15 +6678,20 @@ $SettingsButton.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 9)
 $SettingsButton.Tag = "TopButton"
 $BottomBar.Controls.Add($SettingsButton)
 
+# Identical to the toggle on every child tool: same size, same navy that blends
+# into the header, same glyphs, same hover highlight.
 $ThemeToggleButton = New-Object System.Windows.Forms.Button
-$ThemeToggleButton.Size = New-Object System.Drawing.Size(44,30)
+$ThemeToggleButton.Size = New-Object System.Drawing.Size(44,32)
 $ThemeToggleButton.Anchor = "Top,Right"
-$ThemeToggleButton.BackColor = [System.Drawing.Color]::FromArgb(0,120,215)
+$ThemeToggleButton.BackColor = [System.Drawing.Color]::FromArgb(24,47,74)
 $ThemeToggleButton.ForeColor = [System.Drawing.Color]::White
 $ThemeToggleButton.FlatStyle = "Flat"
 $ThemeToggleButton.FlatAppearance.BorderSize = 0
+$ThemeToggleButton.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(45,74,110)
+$ThemeToggleButton.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(18,36,58)
 $ThemeToggleButton.Font = New-Object System.Drawing.Font("Segoe UI Symbol", 15)
 $ThemeToggleButton.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+$ThemeToggleButton.TabStop = $false
 $ThemeToggleButton.Tag = "ThemeButton"
 
 $ThemeToggleTip = New-Object System.Windows.Forms.ToolTip
@@ -6916,11 +6957,13 @@ Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Delete Group"
 
 # Right sidebar: M365, Computers, OUs, and Reports
 Add-Section -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "M365"
+Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "Block Teams Numbers" -Action { Launch-M365TeamsBlockNumber } -ForeColor ([System.Drawing.Color]::ForestGreen)
+Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "Exchange Online" -Action { Launch-M365ExchangeOnlineTools } -ForeColor ([System.Drawing.Color]::ForestGreen)
+Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "Intune Tools" -Action { Launch-IntuneTools } -ForeColor ([System.Drawing.Color]::ForestGreen)
 Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "M365 Group Compare/Add" -Action { Launch-M365GroupCompareScript } -ForeColor ([System.Drawing.Color]::ForestGreen)
 Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "M365 Distro Compare/Add" -Action { Launch-M365DistributionGroupCompareScript } -ForeColor ([System.Drawing.Color]::ForestGreen)
 Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "M365 Conditional Access" -Action { Launch-M365ConditionalAccessScript } -ForeColor ([System.Drawing.Color]::ForestGreen)
-Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "Block Teams Numbers" -Action { Launch-M365TeamsBlockNumber } -ForeColor ([System.Drawing.Color]::ForestGreen)
-Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "Intune Tools" -Action { Launch-IntuneTools } -ForeColor ([System.Drawing.Color]::ForestGreen)
+Add-Button -Panel $RightButtonPanel -YPosition ([ref]$RightY) -Text "OneDrive / SharePoint" -Action { Launch-M365OneDriveTools } -ForeColor ([System.Drawing.Color]::ForestGreen)
 
 $RightY += 8
 
@@ -7070,7 +7113,7 @@ Write-OutputField `
 
 Write-StartupSection "MICROSOFT 365"
 Write-OutputBox `
-    "M365 Group Compare/Add, M365 Distro Compare/Add, M365 Conditional Access, Block Teams Numbers, and Intune Tools each launch their own windows." `
+    "Block Teams Numbers, Exchange Online, Intune Tools, M365 Group Compare/Add, M365 Distro Compare/Add, M365 Conditional Access, and OneDrive / SharePoint each launch their own windows." `
     $StartupBlue
 Write-OutputField `
     -Label "Block Teams Numbers" `
@@ -7078,8 +7121,18 @@ Write-OutputField `
     -LabelColor $StartupNavy `
     -ValueColor $StartupBlue
 Write-OutputField `
+    -Label "Exchange Online" `
+    -Value "Inbox rules, message trace, group delivery, mailbox report, quarantine, header analysis, mail flow rules and folder permissions." `
+    -LabelColor $StartupNavy `
+    -ValueColor $StartupBlue
+Write-OutputField `
     -Label "Intune Tools" `
     -Value "Intune and Entra administration, including Win32 app packaging. Signs in to Microsoft Graph with device code flow under your standard account." `
+    -LabelColor $StartupNavy `
+    -ValueColor $StartupBlue
+Write-OutputField `
+    -Label "OneDrive / SharePoint" `
+    -Value "Grant and remove access to a user's OneDrive, audit who has it, offboarding handover, restore a deleted OneDrive, storage and sharing report." `
     -LabelColor $StartupNavy `
     -ValueColor $StartupBlue
 Write-OutputField `

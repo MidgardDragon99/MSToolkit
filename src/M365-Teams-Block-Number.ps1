@@ -722,11 +722,19 @@ function Get-MSToolkitValueLabels {
 
 function Update-MSToolkitThemeButton {
     if (-not $script:btnTheme) { return }
+
+    # The header stays navy in both themes, so the toggle does too - matching
+    # MSToolkit, IntuneTools and the other M365 tools exactly.
+    $script:btnTheme.BackColor = [System.Drawing.Color]::FromArgb(24,47,74)
+    $script:btnTheme.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(45,74,110)
+
     if ($script:ThemeMode -eq 'Dark') {
         $script:btnTheme.Text = $script:ThemeGlyphLight
+        $script:btnTheme.ForeColor = [System.Drawing.Color]::FromArgb(255,214,102)
         $script:ThemeToolTip.SetToolTip($script:btnTheme, 'Switch to light mode')
     } else {
         $script:btnTheme.Text = $script:ThemeGlyphDark
+        $script:btnTheme.ForeColor = [System.Drawing.Color]::FromArgb(226,234,245)
         $script:ThemeToolTip.SetToolTip($script:btnTheme, 'Switch to dark mode')
     }
 }
@@ -1809,29 +1817,32 @@ $lblTitle = New-MSToolkitLabel -Text $script:ToolTitle -X 16 -Y 6 -W 600 -Tag 'H
 $lblTitle.Height = 30
 $lblSub = New-MSToolkitLabel -Text 'Tenant-wide inbound PSTN number blocking - Microsoft Teams' -X 18 -Y 38 -W 700 -Tag 'HeaderSub'
 
-# Theme switcher (top right of the header)
-$probeFont = New-Object System.Drawing.Font('Segoe MDL2 Assets', 14)
-if ($probeFont.Name -eq 'Segoe MDL2 Assets') {
-    $themeFont = $probeFont
-    $script:ThemeGlyphDark  = [string][char]0xE708   # moon  (shown in Light mode)
-    $script:ThemeGlyphLight = [string][char]0xE706   # sun   (shown in Dark mode)
-} else {
-    $probeFont.Dispose()
-    $themeFont = New-Object System.Drawing.Font('Segoe UI Symbol', 14)
-    $script:ThemeGlyphDark  = [string][char]0x263E
-    $script:ThemeGlyphLight = [string][char]0x2600
-}
+# Theme switcher (top right of the header).
+#
+# Deliberately identical to MSToolkit, IntuneTools and the other M365 tools:
+# 44x32, Segoe UI Symbol 15, U+263C sun and U+263E moon, navy that blends into
+# the header, and the same hover highlight. This used to use Segoe MDL2 Assets
+# glyphs in a 40x40 button, which looked like a different icon set.
+$themeFont = New-Object System.Drawing.Font('Segoe UI Symbol', 15)
+$script:ThemeGlyphDark  = [string][char]0x263E   # moon (shown in Light mode)
+$script:ThemeGlyphLight = [string][char]0x263C   # sun  (shown in Dark mode)
+
 $script:ThemeToolTip = New-Object System.Windows.Forms.ToolTip
 $script:btnTheme = New-Object System.Windows.Forms.Button
-$script:btnTheme.Size = New-Object System.Drawing.Size(40, 40)
-$script:btnTheme.Location = New-Object System.Drawing.Point(880, 12)
+$script:btnTheme.Size = New-Object System.Drawing.Size(44, 32)
+$script:btnTheme.Location = New-Object System.Drawing.Point(880, 16)
 $script:btnTheme.Font = $themeFont
-$script:btnTheme.Tag = 'HeaderButton'
+$script:btnTheme.Tag = 'ThemeToggle'
 $script:btnTheme.TabStop = $false
 $script:btnTheme.Cursor = [System.Windows.Forms.Cursors]::Hand
 $script:btnTheme.TextAlign = 'MiddleCenter'
+$script:btnTheme.FlatStyle = 'Flat'
+$script:btnTheme.FlatAppearance.BorderSize = 0
+$script:btnTheme.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(45,74,110)
+$script:btnTheme.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(18,36,58)
+$script:btnTheme.BackColor = [System.Drawing.Color]::FromArgb(24,47,74)
 $pnlHeader.Controls.AddRange(@($lblTitle, $lblSub, $script:btnTheme))
-$pnlHeader.Add_Resize({ $script:btnTheme.Left = $pnlHeader.ClientSize.Width - $script:btnTheme.Width - 14 })
+$pnlHeader.Add_Resize({ $script:btnTheme.Left = $pnlHeader.ClientSize.Width - $script:btnTheme.Width - 12 })
 
 # Tenant connection group
 $grpConn = New-Object System.Windows.Forms.GroupBox

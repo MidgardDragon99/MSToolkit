@@ -16,6 +16,8 @@ Remove-Item -Path "$AppDir\M365-Group-Compare.ps1" -Force -ErrorAction SilentlyC
 Remove-Item -Path "$AppDir\M365-Distribution-Group-Compare.ps1" -Force -ErrorAction SilentlyContinue
 Remove-Item -Path "$AppDir\M365-Conditional-Access-User-Manager.ps1" -Force -ErrorAction SilentlyContinue
 Remove-Item -Path "$AppDir\M365-Teams-Block-Number.ps1" -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "$AppDir\M365-Exchange-Online-Tools.ps1" -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "$AppDir\M365-OneDrive-SharePoint-Tools.ps1" -Force -ErrorAction SilentlyContinue
 Remove-Item -Path "$AppDir\Launch-M365-Teams-Block-Number.cmd" -Force -ErrorAction SilentlyContinue
 Remove-Item -Path "$AppDir\MSToolkit.lnk" -Force -ErrorAction SilentlyContinue
 
@@ -31,6 +33,8 @@ Copy-Item -Path "$PSScriptRoot\M365-Group-Compare.ps1" -Destination $AppDir -For
 Copy-Item -Path "$PSScriptRoot\M365-Distribution-Group-Compare.ps1" -Destination $AppDir -Force
 Copy-Item -Path "$PSScriptRoot\M365-Conditional-Access-User-Manager.ps1" -Destination $AppDir -Force
 Copy-Item -Path "$PSScriptRoot\M365-Teams-Block-Number.ps1" -Destination $AppDir -Force
+Copy-Item -Path "$PSScriptRoot\M365-Exchange-Online-Tools.ps1" -Destination $AppDir -Force
+Copy-Item -Path "$PSScriptRoot\M365-OneDrive-SharePoint-Tools.ps1" -Destination $AppDir -Force
 Copy-Item -Path "$PSScriptRoot\Launch-M365-Teams-Block-Number.cmd" -Destination $AppDir -Force
 Copy-Item -Path "$PSScriptRoot\MSToolkit.lnk" -Destination $AppDir -Force
 

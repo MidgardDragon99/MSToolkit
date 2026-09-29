@@ -1,6 +1,6 @@
 # MSToolkit
 
-MSToolkit is a Windows desktop toolkit for day-to-day Active Directory and Microsoft 365 administration. A main console handles common AD tasks (users, groups, computers, OUs, replication, reports) and launches a set of companion tools for account creation, group comparison, lockout investigation, Microsoft 365 groups, Conditional Access, Teams call blocking and Intune.
+MSToolkit is a Windows desktop toolkit for day-to-day Active Directory and Microsoft 365 administration. A main console handles common AD tasks (users, groups, computers, OUs, replication, reports) and launches a set of companion tools for account creation, group comparison, lockout investigation, Microsoft 365 groups, Conditional Access, Exchange Online, OneDrive and SharePoint, Teams call blocking and Intune.
 
 Nothing organization-specific is built in. Domains, OUs, tenant details and naming values are entered once in **Settings** and shared by every tool.
 
@@ -51,6 +51,8 @@ Everything below is installed to `C:\Program Files (x86)\MSToolkit`. The files M
 | `M365-Group-Compare.ps1` | Microsoft 365 security group compare and add |
 | `M365-Distribution-Group-Compare.ps1` | Exchange Online distribution group compare and add |
 | `M365-Conditional-Access-User-Manager.ps1` | Conditional Access user include/exclude manager |
+| `M365-Exchange-Online-Tools.ps1` | Exchange Online troubleshooting: inbox rules, message trace, quarantine, mail flow and mailbox reports |
+| `M365-OneDrive-SharePoint-Tools.ps1` | OneDrive access, offboarding handover, deleted OneDrive restore and storage/sharing reports |
 | `M365-Teams-Block-Number.ps1` / `Launch-M365-Teams-Block-Number.cmd` | Teams inbound number blocking, and its standalone launcher |
 | `IntuneTools.ps1` | Intune and Entra device, app and policy management |
 | `Launcher.ps1` | Used by `MSToolkit.EXE` to refresh the runtime copy |
@@ -86,7 +88,7 @@ RSAT components the installer adds when missing:
 | Domain controllers | LDAP 389, Active Directory Web Services 9389 | Everything AD |
 | Domain controllers | Remote Event Log (RPC) | Investigate Account Lockout |
 | The Entra Connect server | PowerShell remoting (WinRM 5985) | Delta Sync |
-| Microsoft 365 (`login.microsoftonline.com`, `graph.microsoft.com`, Exchange Online, Teams) | HTTPS 443 | The Microsoft 365 tools and IntuneTools |
+| Microsoft 365 (`login.microsoftonline.com`, `graph.microsoft.com`, Exchange Online, SharePoint Online, Teams) | HTTPS 443 | The Microsoft 365 tools and IntuneTools |
 | PowerShell Gallery (`www.powershellgallery.com`) | HTTPS 443 | One-time install of the Microsoft 365 PowerShell modules |
 
 ### Accounts
@@ -342,6 +344,7 @@ Used by **Create New AD User**.
 | Tenant ID | Directory (tenant) ID of your Entra tenant | IntuneTools' **Set to Org Defaults** has nothing to copy; Teams call blocking skips its tenant ID check |
 | Client ID | Application (client) ID of the IntuneTools app registration ([section 11](#11-intunetools-and-its-app-registration)) | **Set to Org Defaults** has nothing to copy - enter it in IntuneTools directly instead |
 | Expected tenant domain | Any verified domain of your tenant, e.g. `contoso.com` | Teams call blocking stays read-only |
+| SharePoint admin URL | The SharePoint admin center address, e.g. `https://contoso-admin.sharepoint.com` | Built from the onmicrosoft domain (`contoso.onmicrosoft.com` becomes `https://contoso-admin.sharepoint.com`); if that's blank too, type it in OneDrive / SharePoint |
 
 ### Buttons
 
@@ -379,7 +382,7 @@ Settings are saved per Windows account in `%APPDATA%\MSToolkit\settings.json`. R
 | Users | Create New User, Get User, Get User Groups, Get User OU, Unlock User, Reset Password, Force Password Change, Enable User, Disable User, Investigate Lockout, Delete User |
 | Service Accounts | Get Managed Service Accounts, Get Special Function Accounts |
 | Groups | Get Group, Get Group Members, Get Security Groups, Get Distribution Groups, Add User to Group, Remove User from Group, Create Group, Compare/Manage User Groups, Delete Group |
-| M365 | M365 Group Compare/Add, M365 Distro Compare/Add, M365 Conditional Access, Block Teams Numbers, Intune Tools |
+| M365 | Block Teams Numbers, Exchange Online, Intune Tools, M365 Group Compare/Add, M365 Distro Compare/Add, M365 Conditional Access, OneDrive / SharePoint |
 | Computers | Get Computer, Get Computer OU, Enable Computer, Disable Computer, Delete Computer, Reset Computer Account |
 | OUs | Get Top-Level OUs, Get Employee / Computer / Server / Disabled OUs, Get All Common OUs, Create OU, Move Object to OU |
 | Reports | 90-Day Inactive Users, 90-Day Inactive Computers, Password Expiring Soon |
@@ -445,6 +448,21 @@ Shows how a user is targeted across Conditional Access policies and adds or remo
 - **Module:** `Microsoft.Graph.Authentication` - install it once for your account if it isn't already there (M365 Group Compare offers to, or run `Install-Module Microsoft.Graph.Authentication -Scope CurrentUser`).
 - **Sign-in permissions (delegated):** Policy.Read.All, Policy.ReadWrite.ConditionalAccess, Application.Read.All, User.Read.All, Group.Read.All, Directory.Read.All.
 - **Role:** Conditional Access Administrator or Security Administrator.
+
+### Exchange Online
+
+Troubleshooting tabs for Exchange Online: **Inbox Rules** (flags rules that forward or redirect outside the tenant, or delete mail), **Message Trace**, **Group Delivery**, **Mailbox Report**, **Quarantine**, **Header Analyser**, **Mail Flow Rules** and **Folder Permissions**. Read-only, except releasing quarantined mail, which asks for confirmation first.
+
+- **Module:** `ExchangeOnlineManagement` - the tool offers to install it for your account.
+- **Role:** an Exchange administrator role; releasing quarantined mail needs a role allowed to manage quarantine (for example Security Administrator or Exchange Administrator).
+
+### OneDrive / SharePoint
+
+Grant and remove access to a user's OneDrive, see who already has access, run an offboarding handover, restore a deleted OneDrive, and report storage and sharing. Read-only apart from granting access, removing access and restoring a site, each confirmed first.
+
+- **Needs:** the SharePoint admin center address. It's filled in from **SharePoint admin URL** in Settings, or built from the **onmicrosoft domain**; you can also type it in the tool's header, and a changed value is remembered for your account.
+- **Module:** `Microsoft.Online.SharePoint.PowerShell` - the tool offers to install it for your account.
+- **Role:** SharePoint Administrator.
 
 ### Block Teams Numbers
 
@@ -554,7 +572,7 @@ Tabs: Packaging, Devices, Autopilot, Apps, Policies, Groups, Reports, Settings.
 | `%APPDATA%\MSToolkit\settings.json` | Settings, theme, selected DC | Admin account |
 | `%APPDATA%\MSToolkit\m365-credential.xml`, `signin-auto.flag` | Remembered Microsoft 365 sign-in (encrypted) | Admin account |
 | `%APPDATA%\MSToolkit\launcher-admin-username.txt` | Admin username remembered by the launcher | Your Windows account |
-| `%APPDATA%\MSToolkit\settings.json` | Theme choices of the Microsoft 365 tools | Your Windows account |
+| `%APPDATA%\MSToolkit\settings.json` | Theme choices of the Microsoft 365 tools; OneDrive / SharePoint's remembered admin URL | Your Windows account |
 | `%APPDATA%\MSToolkit\IntuneTools\config.json`, `token.dat` | IntuneTools settings and cached sign-in (encrypted) | Your Windows account |
 
 ---
@@ -571,6 +589,7 @@ Tabs: Packaging, Devices, Autopilot, Apps, Policies, Groups, Reports, Settings.
 | An OU button shows "- domain root" in orange | That OU isn't set in Settings, so the domain root was used. Set it under **Settings** > **Organizational units**. |
 | Delta Sync fails | Check the Entra Connect server name, that PowerShell remoting is enabled on it, and that your admin account may run `Start-ADSyncSyncCycle` there. |
 | A Microsoft 365 module won't install | The PC can't reach the PowerShell Gallery. Allow `www.powershellgallery.com`, or install the module from a PowerShell window running as your Windows account. |
+| OneDrive / SharePoint won't connect | Check the admin URL is `https://<name>-admin.sharepoint.com` for your tenant and that your account has the SharePoint Administrator role. |
 | IntuneTools sign-in never returns | The loopback listener is blocked. Set **Sign-in method** to **Device code**. |
 | IntuneTools says a permission is missing | Add that Graph permission to the app registration and grant admin consent again ([11.2](#112-api-permissions)). |
 | Teams sign-in error `0x80070520` | Windows sign-in found no session for the account running the tool. Run `C:\ProgramData\MSToolkit\Launch-M365-Teams-Block-Number.cmd` as the Windows user signed in to the PC. |

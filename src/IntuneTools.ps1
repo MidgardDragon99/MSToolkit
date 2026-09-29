@@ -896,12 +896,18 @@ function Set-AppTheme {
     }
 
     if ($script:BtnTheme) {
-        # the glyph shows the mode you would switch TO
+        # The glyph shows the mode you would switch TO. Same characters and colours
+        # as MSToolkit and the M365 tools - U+263C, not U+2600, which renders heavier.
+        $script:BtnTheme.BackColor = [System.Drawing.Color]::FromArgb(24,47,74)
+        $script:BtnTheme.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(45,74,110)
+
         if ($Name -eq 'Dark') {
-            $script:BtnTheme.Text = [string][char]0x2600      # sun
+            $script:BtnTheme.Text = [string][char]0x263C      # sun
+            $script:BtnTheme.ForeColor = [System.Drawing.Color]::FromArgb(255,214,102)
             if ($script:ThemeTip) { $script:ThemeTip.SetToolTip($script:BtnTheme, 'Switch to light mode') }
         } else {
             $script:BtnTheme.Text = [string][char]0x263E      # moon
+            $script:BtnTheme.ForeColor = [System.Drawing.Color]::FromArgb(226,234,245)
             if ($script:ThemeTip) { $script:ThemeTip.SetToolTip($script:BtnTheme, 'Switch to dark mode') }
         }
     }
@@ -1237,9 +1243,18 @@ $topBar.Controls.Add($script:LblAccount)
 
 # light / dark toggle - top right
 $script:ThemeTip = New-Object System.Windows.Forms.ToolTip
-$script:BtnTheme = New-Button -Text ([string][char]0x263E) -X 1330 -Y 6 -W 42 -H 30 -Anchor 'Top,Right'
-$script:BtnTheme.Font      = New-Object System.Drawing.Font('Segoe UI Symbol', 12)
+# Matches the toggle on MSToolkit and every M365 tool: 44x32, navy that blends into
+# the header, Segoe UI Symbol 15, and the same hover highlight.
+$script:BtnTheme = New-Button -Text ([string][char]0x263E) -X 1330 -Y 6 -W 44 -H 32 -Anchor 'Top,Right'
+$script:BtnTheme.Font      = New-Object System.Drawing.Font('Segoe UI Symbol', 15)
 $script:BtnTheme.TextAlign = 'MiddleCenter'
+$script:BtnTheme.FlatStyle = 'Flat'
+$script:BtnTheme.FlatAppearance.BorderSize = 0
+$script:BtnTheme.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(45,74,110)
+$script:BtnTheme.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(18,36,58)
+$script:BtnTheme.BackColor = [System.Drawing.Color]::FromArgb(24,47,74)
+$script:BtnTheme.TabStop   = $false
+$script:BtnTheme.Tag       = 'ThemeToggle'
 $script:BtnTheme.Add_Click({
     if ($script:Config.Theme -eq 'Dark') { Set-AppTheme 'Light' } else { Set-AppTheme 'Dark' }
     Save-Config | Out-Null
