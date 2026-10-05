@@ -1520,7 +1520,36 @@ function Show-OneDriveAccessState {
     $script:lblAccessUrl.Text = [string]$Site.Url
     $script:CurrentSite = $Site
 
-    $Admins = Get-SPOSiteAdmins -Url $Site.Url
+    # Listing a OneDrive's users needs site collection admin on that OneDrive,
+    # which a SharePoint Administrator does not get by default. A refusal here is a
+    # gap in what can be shown, not a failed lookup: the site was found, its URL is
+    # on screen and Grant Access still works. Any other error still raises.
+    $Admins = $null
+    $Denied = $false
+
+    try {
+        $Admins = @(Get-SPOSiteAdmins -Url $Site.Url)
+    }
+    catch {
+        if ("$($_.Exception.Message)" -match 'Access is denied|blocked|unauthoriz') { $Denied = $true }
+        else { throw }
+    }
+
+    if ($Denied) {
+        $Index = $script:gridAccess.Rows.Add(
+            '-',
+            'Current access could not be read',
+            "$script:SelfGrantHint",
+            ''
+        )
+        Set-ExoRowTone -Row $script:gridAccess.Rows[$Index] -Tone 'Warning'
+
+        $script:lblAccessSummary.Text = "$($Site.Title) - the current access list could not be read with this account. $script:SelfGrantHint"
+        $script:lblAccessSummary.ForeColor = (Get-MSToolkitThemePalette).Warning
+        Write-AppLog "Found $($Site.Url), but its current access could not be read - this account is not a site collection admin there. Grant Access still works. $script:SelfGrantHint" 'WARN'
+        return
+    }
+
     $Owner = [string]$Site.Owner
 
     foreach ($Admin in $Admins) {
@@ -2284,28 +2313,42 @@ New-OdButton -Parent $tabAccess -Text 'Grant Access' -X 476 -Y 49 -Width 120 -Ne
 New-OdButton -Parent $tabAccess -Text 'Remove Selected' -X 604 -Y 49 -Width 130 -NeedsConnection -OnClick { Invoke-OneDriveRemoveAccess } | Out-Null
 New-OdButton -Parent $tabAccess -Text 'Export CSV' -X 742 -Y 49 -Width 110 -NeedsConnection -OnClick { Export-ExoGrid -Grid $script:gridAccess -BaseName 'OneDriveAccess' } | Out-Null
 
+# Three lines under the Give access to row. Only OneDrive owners are in the
+# picker - SharePoint Online PowerShell cannot list every tenant user - so an
+# admin account without its own OneDrive has to be typed in.
+$script:SelfGrantHint = "Can't see the current access? Grant it to the account you signed in with, by typing its address. The list then fills in and entries can be removed - take that access away last."
+$AccessHintLines = @(
+    'Granting makes someone a site collection administrator - full control of every file, including anything never shared. Remove it when the reason has passed.',
+    'The field accepts any account; type the full address for one not in the list. Only OneDrive owners are listed, so an admin account without its own OneDrive won''t appear.',
+    $script:SelfGrantHint
+)
+$HintY = 80
+foreach ($HintText in $AccessHintLines) {
+    $HintLabel = New-Object System.Windows.Forms.Label
+    $HintLabel.Text = $HintText
+    $HintLabel.Location = New-Object System.Drawing.Point(126,$HintY)
+    $HintLabel.Size = New-Object System.Drawing.Size(900,16)
+    $HintLabel.Anchor = 'Top,Left,Right'
+    $HintLabel.Font = New-Object System.Drawing.Font('Segoe UI',8)
+    $tabAccess.Controls.Add($HintLabel)
+    $HintY += 16
+}
+
 $script:lblAccessUrl = New-Object System.Windows.Forms.Label
-$script:lblAccessUrl.Location = New-Object System.Drawing.Point(12,86)
+$script:lblAccessUrl.Location = New-Object System.Drawing.Point(12,134)
 $script:lblAccessUrl.Size = New-Object System.Drawing.Size(1000,18)
 $script:lblAccessUrl.Anchor = 'Top,Left,Right'
 $script:lblAccessUrl.Font = New-Object System.Drawing.Font('Consolas',9)
 $tabAccess.Controls.Add($script:lblAccessUrl)
 
 $script:lblAccessSummary = New-Object System.Windows.Forms.Label
-$script:lblAccessSummary.Location = New-Object System.Drawing.Point(12,108)
+$script:lblAccessSummary.Location = New-Object System.Drawing.Point(12,156)
 $script:lblAccessSummary.Size = New-Object System.Drawing.Size(1000,20)
 $script:lblAccessSummary.Anchor = 'Top,Left,Right'
 $script:lblAccessSummary.Font = New-Object System.Drawing.Font('Segoe UI Semibold',9)
 $tabAccess.Controls.Add($script:lblAccessSummary)
 
-$lblAccessHint = New-Object System.Windows.Forms.Label
-$lblAccessHint.Text = 'Granted access makes somebody a site collection administrator: full control of every file, including anything never shared. Remove it when the reason has passed.'
-$lblAccessHint.Location = New-Object System.Drawing.Point(12,130)
-$lblAccessHint.Size = New-Object System.Drawing.Size(1000,18)
-$lblAccessHint.Font = New-Object System.Drawing.Font('Segoe UI',8)
-$tabAccess.Controls.Add($lblAccessHint)
-
-$script:gridAccess = New-ExoGrid -Parent $tabAccess -Top 154 -Height ($tabAccess.ClientSize.Height - 168)
+$script:gridAccess = New-ExoGrid -Parent $tabAccess -Top 182 -Height ($tabAccess.ClientSize.Height - 196)
 [void]$script:gridAccess.Columns.Add('Kind','Kind')
 [void]$script:gridAccess.Columns.Add('Name','Name')
 [void]$script:gridAccess.Columns.Add('Login','Login name')
