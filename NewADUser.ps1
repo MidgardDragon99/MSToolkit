@@ -1583,8 +1583,15 @@ function New-MSToolkitADUser {
                 $AddressUser = Get-ADUser `
                     -Identity $AddressUserSam `
                     -Server $Server `
-                    -Properties streetAddress,l,st,postalCode,c,co,countryCode `
+                    -Properties streetAddress,l,st,postalCode,c,co,countryCode,physicalDeliveryOfficeName `
                     -ErrorAction Stop
+
+                # physicalDeliveryOfficeName is the "Office" box on the ADUC General
+                # tab. It travels with the address in practice, so it is cloned by
+                # the same tick box.
+                if ($AddressUser.physicalDeliveryOfficeName) {
+                    $AddressAttributes['physicalDeliveryOfficeName'] = [string]$AddressUser.physicalDeliveryOfficeName
+                }
 
                 if ($AddressUser.streetAddress) {
                     $AddressAttributes['streetAddress'] = [string]$AddressUser.streetAddress
@@ -1615,6 +1622,7 @@ function New-MSToolkitADUser {
                 }
 
                 Write-OutputBox "Address clone user resolved: $($AddressUser.SamAccountName)"
+                Write-OutputBox "Office: $($AddressUser.physicalDeliveryOfficeName)"
                 Write-OutputBox "Street: $($AddressUser.streetAddress)"
                 Write-OutputBox "City: $($AddressUser.l)"
                 Write-OutputBox "State: $($AddressUser.st)"
@@ -1824,6 +1832,7 @@ function New-MSToolkitADUser {
 
         if ($AddressUser) {
             Write-OutputBox "Cloned address from $($AddressUser.SamAccountName):" ([System.Drawing.Color]::Green)
+            Write-OutputBox "Office: $($AddressUser.physicalDeliveryOfficeName)" ([System.Drawing.Color]::Green)
             Write-OutputBox "Street: $($AddressUser.streetAddress)" ([System.Drawing.Color]::Green)
             Write-OutputBox "City: $($AddressUser.l)" ([System.Drawing.Color]::Green)
             Write-OutputBox "State: $($AddressUser.st)" ([System.Drawing.Color]::Green)

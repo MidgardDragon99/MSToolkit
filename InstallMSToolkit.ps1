@@ -31,6 +31,7 @@ $PayloadFiles = @(
     "M365-Teams-Block-Number.ps1",
     "Launch-M365-Teams-Block-Number.cmd",
     "NewADUser.ps1",
+    "OffboardUser.ps1",
     "InstallMSToolkit.ps1",
     "UninstallMSToolkit.ps1"
 )

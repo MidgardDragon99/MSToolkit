@@ -37,6 +37,7 @@ for %%F in (
   "M365-OneDrive-SharePoint-Tools.ps1"
   "M365-Teams-Block-Number.ps1"
   "NewADUser.ps1"
+  "OffboardUser.ps1"
   "UninstallMSToolkit.ps1"
 ) do if not exist "%%~F" goto MissingInstallFile
 
@@ -75,6 +76,7 @@ del /f /q MSToolkit-Install.7z MSToolkit-Install.exe MSToolkit-Uninstall.7z MSTo
   M365-OneDrive-SharePoint-Tools.ps1 ^
   M365-Teams-Block-Number.ps1 ^
   NewADUser.ps1 ^
+  OffboardUser.ps1 ^
   UninstallMSToolkit.ps1
 
 if errorlevel 1 goto InstallArchiveFailed

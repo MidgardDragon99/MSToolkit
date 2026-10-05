@@ -46,6 +46,7 @@ Everything below is installed to `C:\Program Files (x86)\MSToolkit`, and MSToolk
 | `MSToolkit.ps1` | The main console |
 | `Launch-MSToolkit.bat` | Asks for the admin account and starts the console |
 | `NewADUser.ps1` / `Launch-NewADUser.bat` | Create New AD User, and its standalone launcher |
+| `OffboardUser.ps1` | Offboard User: the departing-employee checklist |
 | `Compare-UserGroups.ps1` | Compare and manage AD group memberships |
 | `Investigate-AccountLockout.ps1` | Account lockout investigation |
 | `M365-Group-Compare.ps1` | Microsoft 365 security group compare and add |
@@ -346,6 +347,24 @@ Used by **Create New AD User**.
 | Expected tenant domain | Any verified domain of your tenant, e.g. `contoso.com` | Teams call blocking stays read-only |
 | SharePoint admin URL | The SharePoint admin center address, e.g. `https://contoso-admin.sharepoint.com` | Built from the onmicrosoft domain (`contoso.onmicrosoft.com` becomes `https://contoso-admin.sharepoint.com`); if that's blank too, type it in OneDrive / SharePoint |
 
+### Offboarding
+
+All optional. Used only by **Offboard User**; a step whose setting is blank is left out of its checklist, so a site without, say, a badge system gets a shorter list rather than a dead button.
+
+| Setting | What to enter | If blank |
+| --- | --- | --- |
+| MFA system / MFA admin address | Your MFA product's name and admin console address | No MFA step |
+| Access control system / host | The badge system's name, and the server it runs on (Remote Desktop) or its web address | No physical access step |
+| RMM product / RMM device report | Your RMM product and the report that captures a device before it is wiped | The device step has no report sub-steps |
+| Mail archiving product | Your email archiving or backup product | The mailbox step has no archive sub-steps |
+| Line-of-business systems | One per line: `Name \| web address \| note` (address and note optional) | No line-of-business step |
+| Device decommission checklist | A full path, web address, or file name in the install folder | No document button on the decommission step |
+| Offboarding checklist | Same | No document button on the final step |
+| Completed checklists filed in | Free text, e.g. a document library or folder | The final step just says to keep a record |
+| Group export folder | A folder | `C:\ProgramData\MSToolkit\Logs` |
+
+The Entra Connect server, Users, Admin accounts and Disabled accounts OU settings are also used by Offboard User.
+
 ### Buttons
 
 | Button | What it does |
@@ -379,13 +398,15 @@ Settings are saved per Windows account in `%APPDATA%\MSToolkit\settings.json`. R
 
 | Section | Buttons |
 | --- | --- |
-| Users | Create New User, Get User, Get User Groups, Get User OU, Unlock User, Reset Password, Force Password Change, Enable User, Disable User, Investigate Lockout, Delete User |
+| Users | Create New User, Offboard User, Get User, Get User Groups, Get User OU, Unlock User, Reset Password, Force Password Change, Unforce Password Change, Add Phone Number, Enable User, Disable User, Investigate Lockout, Delete User |
 | Service Accounts | Get Managed Service Accounts, Get Special Function Accounts |
 | Groups | Get Group, Get Group Members, Get Security Groups, Get Distribution Groups, Add User to Group, Remove User from Group, Create Group, Compare/Manage User Groups, Delete Group |
 | M365 | Block Teams Numbers, Exchange Online, Intune Tools, M365 Group Compare/Add, M365 Distro Compare/Add, M365 Conditional Access, OneDrive / SharePoint |
 | Computers | Get Computer, Get Computer OU, Enable Computer, Disable Computer, Delete Computer, Reset Computer Account, Remove User From All Sessions |
 | OUs | Get Top-Level OUs, Get Employee / Computer / Server / Disabled OUs, Get All Common OUs, Create OU, Move Object to OU |
 | Reports | 90-Day Inactive Users, 90-Day Inactive Computers, Password Expiring Soon |
+
+User pickers in the companion tools filter as you type, matching anywhere in the name, and show matches in their own list under the box (Up/Down to move, Enter or Tab to accept, Esc to close) - so what is highlighted is exactly what gets picked.
 
 Results appear in **Activity Output** (use **Copy Output** / **Clear Output**). Reports are also saved as CSV in the logs folder (`C:\ProgramData\MSToolkit\Logs`).
 
@@ -436,9 +457,22 @@ Searches every domain controller for lockout events (4740) and, optionally, fail
 
 - **Needs:** permission to read the Security log on the DCs (for example Event Log Readers or domain admin), and auditing of account lockouts and logon failures enabled on the DCs.
 
+### Offboard User
+
+A checklist for a departing employee: it runs the Active Directory work itself, links out to everything else, and records what was done.
+
+- **Load User** resolves the account in AD and shows it prominently as **LOADED:** with name, username, title, department, manager, state and DN. A failed lookup clears whatever was loaded, and every destructive action re-checks that the picker still matches the loaded account, refusing if it doesn't. The user list follows the Users and Admin accounts OUs.
+- **Steps the tool performs** tick themselves only after the change is verified: disable the account, export and remove security group memberships (protected groups, identified by SID/RID, are never removed), clear the telephone and mobile numbers, replicate the selected DC (`repadmin /syncall /AdeP`), and an Entra Connect delta sync when a sync server is set.
+- **Do All Local Actions** runs all of those in order after one confirmation, exporting the groups first so the list survives the removal, and names anything that didn't complete.
+- **Manual steps** - MFA, physical access, distribution and Microsoft 365 groups (opening Distro and Group Compare with the user already loaded), the ticket, Intune devices, decommission, mailbox and licences, the disabled-OU reminder, line-of-business systems and filing the checklist - are ticked by hand. Which ones appear depends on **Settings > Offboarding**.
+- **Undo...** reverses a previous run, even days later: group memberships first, then phone numbers, then re-enabling the account (unless it was already disabled before the run). Each run is journalled to `%LOCALAPPDATA%\MSToolkit\Offboard-Undo` in the admin account's own profile, written after every change. Undo refuses a record whose SID no longer matches the account, never adds anyone to protected groups, and only covers Active Directory - everything else is put back by hand.
+- **Copy Checklist** and **Finish** produce a record for the ticket: the user's details, who ran it and when, the export path, and every step as `[x]` or `[ ]` with sub-steps beneath. Finish also writes it to a text file and opens it.
+
+Needs the same AD rights as the rest of the console; the delta sync needs PowerShell remoting to the Entra Connect server.
+
 ### M365 Group Compare/Add
 
-Compares direct, static Entra security-group memberships of two users and adds missing groups; **Manage User Groups** removes memberships.
+Compares direct, static Entra security-group memberships of two users and adds missing groups; **Manage User Groups** removes memberships, and **Export Security Groups** saves the loaded user's groups to CSV first.
 
 - **Module:** `Microsoft.Graph.Authentication` - the tool offers to install it for your account.
 - **Sign-in permissions (delegated):** User.Read.All, Group.Read.All, GroupMember.ReadWrite.All. The first sign-in shows a consent prompt for Microsoft's Graph command-line app; depending on your tenant's consent settings an administrator may need to approve it.
@@ -446,14 +480,14 @@ Compares direct, static Entra security-group memberships of two users and adds m
 
 ### M365 Distro Compare/Add
 
-Compares Exchange Online distribution-group memberships of two users and adds or removes memberships.
+Compares Exchange Online distribution-group memberships of two users and adds or removes memberships. **Manage User Groups** has **Export Distribution Groups** to save the loaded user's groups to CSV first.
 
 - **Module:** `ExchangeOnlineManagement` - the tool offers to install it for your account.
 - **Role:** an Exchange role that can manage distribution groups, e.g. Recipient Management or Exchange Administrator.
 
 ### M365 Conditional Access
 
-Shows how a user is targeted across Conditional Access policies and adds or removes the user as a **direct** include or exclude. Group-based and All Users assignments are never changed.
+Shows how a user is targeted across Conditional Access policies and adds or removes the user as a **direct** include or exclude. Group-based and All Users assignments are never changed. **Export Conditional Access** saves the loaded policy list to CSV.
 
 - **Module:** `Microsoft.Graph.Authentication` - install it once for your account if it isn't already there (M365 Group Compare offers to, or run `Install-Module Microsoft.Graph.Authentication -Scope CurrentUser`).
 - **Sign-in permissions (delegated):** Policy.Read.All, Policy.ReadWrite.ConditionalAccess, Application.Read.All, User.Read.All, Group.Read.All, Directory.Read.All.

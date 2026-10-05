@@ -120,6 +120,7 @@ function Invoke-MSToolkitThemeToggle {
 
     Save-MSToolkitThemePreference -ToolKey $ToolKey -Theme $script:MSToolkitThemeMode
     Apply-MSToolkitSharedTheme -Root $Form
+    Register-MSToolkitComboFiltersOn -Root $Form
     Set-MSToolkitThemeToggleFace -Button $Button
 
     # Some labels carry a live status colour that the shared theme pass cannot
@@ -1172,6 +1173,277 @@ function Get-MSToolkitOneDriveSites {
     return $script:OneDriveCache
 }
 
+# Filtered user pickers: see Register-MSToolkitComboFilter for why Windows
+# autocomplete is not used here.
+$script:ComboFilterItems = @{}
+$script:ComboFilterRegistered = @{}
+$script:ComboFilterBusy = $false
+$script:ComboFilterSkipHide = $false
+$script:ComboFilterLists = @{}
+$script:ComboFilterOwners = @{}
+
+function Hide-MSToolkitComboMatches {
+    param([System.Windows.Forms.ComboBox]$Combo)
+
+    if (-not $Combo) { return }
+
+    $List = $script:ComboFilterLists[$Combo.GetHashCode()]
+    if ($List) { $List.Visible = $false }
+}
+
+function Set-MSToolkitComboMatch {
+    # Accept whatever is highlighted in the match list.
+    param([System.Windows.Forms.ComboBox]$Combo)
+
+    $List = $script:ComboFilterLists[$Combo.GetHashCode()]
+    if (-not $List -or -not $List.Visible -or $List.SelectedIndex -lt 0) { return $false }
+
+    $script:ComboFilterBusy = $true
+
+    try {
+        $Combo.Text = [string]$List.SelectedItem
+        $Combo.SelectionStart = $Combo.Text.Length
+        $Combo.SelectionLength = 0
+        $List.Visible = $false
+    }
+    finally {
+        $script:ComboFilterBusy = $false
+    }
+
+    return $true
+}
+
+function Register-MSToolkitComboFilter {
+    # Type-ahead that does not fight the control.
+    #
+    # Windows autocomplete opens a suggestion popup ON TOP OF the dropdown list,
+    # so two lists are visible and a click lands on the entry behind the one being
+    # read. Opening the real dropdown instead is no better: an open dropdown owns
+    # the keyboard, so the next letters go to the list, which does its own prefix
+    # jump and overwrites what was being typed.
+    #
+    # So: autocomplete off, dropdown left alone, and matches shown in a plain
+    # ListBox under the box that never takes focus. What is on screen is what gets
+    # clicked, and typing is never interrupted.
+    param([System.Windows.Forms.ComboBox]$Combo)
+
+    if (-not $Combo) { return }
+    if ($Combo.DropDownStyle -eq [System.Windows.Forms.ComboBoxStyle]::DropDownList) { return }
+    if ($script:ComboFilterRegistered[$Combo.GetHashCode()]) { return }
+
+    $Form = $Combo.FindForm()
+    if (-not $Form) { return }
+
+    $Combo.AutoCompleteMode = [System.Windows.Forms.AutoCompleteMode]::None
+    $Combo.AutoCompleteSource = [System.Windows.Forms.AutoCompleteSource]::None
+
+    $List = New-Object System.Windows.Forms.ListBox
+    $List.Font = $Combo.Font
+    $List.Width = $Combo.Width
+    $List.Height = 160
+    $List.Visible = $false
+    $List.TabStop = $false
+    $List.IntegralHeight = $false
+    $List.Tag = "ComboMatches"
+    $Form.Controls.Add($List)
+    $List.BringToFront()
+
+    $script:ComboFilterLists[$Combo.GetHashCode()] = $List
+    $script:ComboFilterOwners[$List.GetHashCode()] = $Combo
+
+    $List.Add_Click({
+        param($ListSender, $EventArgs)
+        $Owner = $script:ComboFilterOwners[$ListSender.GetHashCode()]
+        if ($Owner) {
+            [void](Set-MSToolkitComboMatch -Combo $Owner)
+            $Owner.Focus()
+        }
+    })
+
+    $Combo.Add_TextUpdate({
+        param($ComboSender, $EventArgs)
+
+        if ($script:ComboFilterBusy) { return }
+
+        $Key = $ComboSender.GetHashCode()
+        $Master = $script:ComboFilterItems[$Key]
+
+        # The tool reloads its pickers from time to time - on connect, or after a
+        # DC change. Anything longer than what is stored is a fresh load.
+        if ($null -eq $Master -or $ComboSender.Items.Count -gt @($Master).Count) {
+            $Master = @($ComboSender.Items)
+            $script:ComboFilterItems[$Key] = $Master
+        }
+
+        $List = $script:ComboFilterLists[$Key]
+        if (-not $List -or @($Master).Count -eq 0) { return }
+
+        # If the real dropdown is open it handles the keys itself - jumping to a
+        # prefix match and writing it into the box - and the match list below
+        # never gets used. Close it and let the match list do the work.
+        if ($ComboSender.DroppedDown) {
+            # DropDownClosed fires from this, and its handler hides the match
+            # list - possibly after this one has just shown it. Flag it so that
+            # one close is ignored.
+            $script:ComboFilterSkipHide = $true
+            $ComboSender.DroppedDown = $false
+        }
+
+        $script:ComboFilterBusy = $true
+
+        try {
+            $Typed = "$($ComboSender.Text)"
+
+            # The ComboBox does its own prefix matching: type "Matt" and it rewrites
+            # the box to the first matching entry with the rest selected. Cut that
+            # back to what was actually typed.
+            if ($ComboSender.SelectionLength -gt 0 -and $ComboSender.SelectionStart -le $Typed.Length) {
+                $Typed = $Typed.Substring(0, $ComboSender.SelectionStart)
+                $ComboSender.Text = $Typed
+                $ComboSender.SelectionStart = $Typed.Length
+                $ComboSender.SelectionLength = 0
+            }
+
+            if ([string]::IsNullOrWhiteSpace($Typed)) {
+                $List.Visible = $false
+                return
+            }
+
+            $Filtered = @($Master | Where-Object { "$_" -like "*$Typed*" })
+
+            if ($Filtered.Count -eq 0) {
+                $List.Visible = $false
+                return
+            }
+
+            $List.BeginUpdate()
+            $List.Items.Clear()
+            $List.Items.AddRange([object[]]$Filtered)
+            $List.EndUpdate()
+            $List.SelectedIndex = 0
+
+            # Sit it directly under the box, in the form's own coordinates.
+            $Form = $ComboSender.FindForm()
+            $Below = $ComboSender.PointToScreen((New-Object System.Drawing.Point(0, $ComboSender.Height)))
+            $List.Location = $Form.PointToClient($Below)
+            $List.Width = $ComboSender.Width
+
+            $Rows = [math]::Min($Filtered.Count, 10)
+            $List.Height = ($Rows * $List.ItemHeight) + 4
+
+            $List.Visible = $true
+            $List.BringToFront()
+        }
+        finally {
+            $script:ComboFilterBusy = $false
+        }
+    })
+
+    $Combo.Add_KeyDown({
+        param($ComboSender, $KeyArgs)
+
+        # While the real dropdown is open it receives the keystrokes, so the first
+        # character typed goes to the list instead of the box - which is why it
+        # used to take two presses to start typing. Close it here, on the way down,
+        # so this character lands in the text box. Only printable keys: arrows,
+        # Enter, Escape and Tab keep their normal behaviour in an open dropdown.
+        if ($ComboSender.DroppedDown) {
+            $Printable = ($KeyArgs.KeyCode -ge [System.Windows.Forms.Keys]::A -and $KeyArgs.KeyCode -le [System.Windows.Forms.Keys]::Z) -or
+                         ($KeyArgs.KeyCode -ge [System.Windows.Forms.Keys]::D0 -and $KeyArgs.KeyCode -le [System.Windows.Forms.Keys]::D9) -or
+                         ($KeyArgs.KeyCode -ge [System.Windows.Forms.Keys]::NumPad0 -and $KeyArgs.KeyCode -le [System.Windows.Forms.Keys]::NumPad9) -or
+                         $KeyArgs.KeyCode -eq [System.Windows.Forms.Keys]::Back -or
+                         $KeyArgs.KeyCode -eq [System.Windows.Forms.Keys]::Space -or
+                         $KeyArgs.KeyCode -eq [System.Windows.Forms.Keys]::OemPeriod -or
+                         $KeyArgs.KeyCode -eq [System.Windows.Forms.Keys]::OemMinus
+
+            if ($Printable) {
+                # Set before closing: the close raises DropDownClosed, whose handler
+                # would otherwise hide the match list the filter is about to fill.
+                $script:ComboFilterSkipHide = $true
+                $ComboSender.DroppedDown = $false
+                # Deliberately not handled: the character still has to reach the box.
+            }
+        }
+
+        $List = $script:ComboFilterLists[$ComboSender.GetHashCode()]
+        if (-not $List -or -not $List.Visible) { return }
+
+        switch ($KeyArgs.KeyCode) {
+            'Down' {
+                if ($List.SelectedIndex -lt ($List.Items.Count - 1)) { $List.SelectedIndex++ }
+                $KeyArgs.Handled = $true
+                $KeyArgs.SuppressKeyPress = $true
+            }
+            'Up' {
+                if ($List.SelectedIndex -gt 0) { $List.SelectedIndex-- }
+                $KeyArgs.Handled = $true
+                $KeyArgs.SuppressKeyPress = $true
+            }
+            'Enter' {
+                [void](Set-MSToolkitComboMatch -Combo $ComboSender)
+                $KeyArgs.Handled = $true
+                $KeyArgs.SuppressKeyPress = $true
+            }
+            'Tab' {
+                [void](Set-MSToolkitComboMatch -Combo $ComboSender)
+            }
+            'Escape' {
+                $List.Visible = $false
+                $KeyArgs.Handled = $true
+                $KeyArgs.SuppressKeyPress = $true
+            }
+        }
+    })
+
+    $Combo.Add_Leave({
+        param($ComboSender, $EventArgs)
+
+        # Leaving for the match list itself is not leaving - the click has to be
+        # allowed to land first.
+        $List = $script:ComboFilterLists[$ComboSender.GetHashCode()]
+        if (-not $List -or -not $List.Visible) { return }
+
+        $Form = $ComboSender.FindForm()
+        if ($Form) {
+            $Cursor = $Form.PointToClient([System.Windows.Forms.Cursor]::Position)
+            if ($List.Bounds.Contains($Cursor)) { return }
+        }
+
+        $List.Visible = $false
+    })
+
+    $Combo.Add_DropDownClosed({
+        param($ComboSender, $EventArgs)
+
+        # Picking from the real dropdown hides the match list - unless this close
+        # was triggered by typing, in which case the match list is taking over.
+        if ($script:ComboFilterSkipHide) {
+            $script:ComboFilterSkipHide = $false
+            return
+        }
+
+        Hide-MSToolkitComboMatches -Combo $ComboSender
+    })
+
+    $script:ComboFilterRegistered[$Combo.GetHashCode()] = $true
+}
+
+function Register-MSToolkitComboFiltersOn {
+    # Walks a form and converts every editable dropdown it finds, so a picker
+    # added later is covered without further wiring.
+    param([System.Windows.Forms.Control]$Root)
+
+    if (-not $Root) { return }
+
+    foreach ($Child in @($Root.Controls)) {
+        if ($Child -is [System.Windows.Forms.ComboBox]) {
+            Register-MSToolkitComboFilter -Combo $Child
+        }
+
+        if ($Child.HasChildren) { Register-MSToolkitComboFiltersOn -Root $Child }
+    }
+}
+
 function Initialize-MSToolkitUserPicker {
     param($Combos)
 
@@ -1860,8 +2132,8 @@ function New-OdUserCombo {
     $Combo.Location = New-Object System.Drawing.Point($X,$Y)
     $Combo.Size = New-Object System.Drawing.Size($Width,24)
     $Combo.DropDownStyle = 'DropDown'
-    $Combo.AutoCompleteMode = 'SuggestAppend'
-    $Combo.AutoCompleteSource = 'ListItems'
+    $Combo.AutoCompleteMode = 'None'
+    $Combo.AutoCompleteSource = 'None'
     $Combo.DropDownHeight = 320
     $Parent.Controls.Add($Combo)
     $script:UserPickerCombos += $Combo
@@ -2246,6 +2518,12 @@ $MainForm.Add_Shown({
 $MainForm.Add_Resize({ Resize-OdGrids })
 
 Hide-PowerShellConsole
+# Type-ahead filtering on every editable dropdown. Its own handler, not folded
+# into another, so it runs on every launch rather than only when the tool is
+# started with parameters - and so a failure here cannot stop the rest of
+# start-up. Multiple Shown handlers chain.
+$MainForm.Add_Shown({ Register-MSToolkitComboFiltersOn -Root $MainForm })
+
 [void]$MainForm.ShowDialog()
 
 try { Disconnect-SPOService -ErrorAction SilentlyContinue } catch { }

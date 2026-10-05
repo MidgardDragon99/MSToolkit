@@ -513,6 +513,19 @@ function Get-MSToolkitSettingDefaults {
         ClientId              = ""   # app registration, used by the cloud tools
         ExpectedTenantDomain  = ""   # verified domain a cloud tool must see before it will change anything
         SharePointAdminUrl    = ""   # SharePoint admin center address, used by OneDrive / SharePoint
+        # Offboard User - every one optional; a step whose setting is blank is left out.
+        OffboardMfaName           = ""   # MFA system name
+        OffboardMfaUrl            = ""   # MFA admin console address
+        OffboardAccessName        = ""   # physical access / badge system name
+        OffboardAccessHost        = ""   # its host (Remote Desktop) or web address
+        OffboardRmmName           = ""   # RMM product name
+        OffboardRmmReport         = ""   # RMM device report to run before a wipe
+        OffboardArchiveName       = ""   # mail archiving product name
+        OffboardLobSystems        = ""   # one per line: Name | address | note
+        OffboardDeviceDocument    = ""   # device decommission checklist: path, file name or address
+        OffboardChecklistDocument = ""   # offboarding checklist: path, file name or address
+        OffboardChecklistLocation = ""   # where the completed checklist is filed
+        OffboardExportFolder      = ""   # where group exports are saved
     }
 }
 
@@ -1113,8 +1126,23 @@ function Get-InputBox {
     $label.Size = New-Object System.Drawing.Size(480,55)
     $inputForm.Controls.Add($label)
 
+    # Grow the label to fit the prompt. A fixed 55px clipped anything over two
+    # lines, and a prompt that shows the current value needs three or four.
+    # Measured against a narrower width than the label and rounded up, because
+    # the estimate is optimistic at the right-hand edge.
+    $Graphics = $inputForm.CreateGraphics()
+    try {
+        $Measured = $Graphics.MeasureString($Prompt, $label.Font, 470)
+        $LabelHeight = [int][math]::Ceiling($Measured.Height) + 8
+        if ($LabelHeight -lt 55) { $LabelHeight = 55 }
+        $label.Height = $LabelHeight
+    }
+    finally {
+        $Graphics.Dispose()
+    }
+
     $textbox = New-Object System.Windows.Forms.TextBox
-    $textbox.Location = New-Object System.Drawing.Point(10,75)
+    $textbox.Location = New-Object System.Drawing.Point(10,($label.Bottom + 8))
     $textbox.Size = New-Object System.Drawing.Size(480,22)
     if ($Password) {
         $textbox.UseSystemPasswordChar = $true
@@ -1123,7 +1151,7 @@ function Get-InputBox {
 
     $button = New-Object System.Windows.Forms.Button
     $button.Text = "OK"
-    $button.Location = New-Object System.Drawing.Point(390,115)
+    $button.Location = New-Object System.Drawing.Point(390,($textbox.Bottom + 16))
     $button.Size = New-Object System.Drawing.Size(100,30)
     $button.DialogResult = [System.Windows.Forms.DialogResult]::OK
 
@@ -1134,6 +1162,7 @@ function Get-InputBox {
 
     $inputForm.Controls.Add($button)
     $inputForm.AcceptButton = $button
+    $inputForm.ClientSize = New-Object System.Drawing.Size(500,($button.Bottom + 12))
 
     $inputForm.Add_Shown({
         $textbox.Focus()
@@ -2044,7 +2073,8 @@ function Show-MSToolkitSettings {
             [string]$Key,
             [string]$Caption,
             [string]$Hint = "",
-            [switch]$Browse
+            [switch]$Browse,
+            [switch]$Multiline
         )
 
         $Label = New-Object System.Windows.Forms.Label
@@ -2061,6 +2091,14 @@ function Show-MSToolkitSettings {
         $Box.Size = New-Object System.Drawing.Size($BoxWidth,24)
         $Box.Text = [string]$script:SettingsValues[$Key]
         $Box.Anchor = "Top,Left,Right"
+        if ($Multiline) {
+            # One entry per line.
+            $Box.Multiline = $true
+            $Box.AcceptsReturn = $true
+            $Box.ScrollBars = "Vertical"
+            $Box.WordWrap = $false
+            $Box.Height = 76
+        }
         $script:SettingsScroll.Controls.Add($Box)
         $script:SettingsBoxes[$Key] = $Box
 
@@ -2081,7 +2119,7 @@ function Show-MSToolkitSettings {
             $script:SettingsScroll.Controls.Add($BrowseButton)
         }
 
-        $script:SettingsY += 28
+        $script:SettingsY += $(if ($Multiline) { 80 } else { 28 })
 
         if ($Hint) {
             $HintLabel = New-Object System.Windows.Forms.Label
@@ -2134,6 +2172,20 @@ function Show-MSToolkitSettings {
     Add-SettingsField -Key "ClientId"             -Caption "Client ID:"              -Hint "Optional. Application (client) ID of the app registration IntuneTools signs in through. Only IntuneTools uses it, via Set to Org Defaults; leave blank to enter it in IntuneTools later. No client secret is stored."
     Add-SettingsField -Key "ExpectedTenantDomain" -Caption "Expected tenant domain:" -Hint "A verified domain of your tenant, for example contoso.com. Teams Block Number compares it with the verified domains of the tenant you sign in to and stays read-only unless it is listed. Blank keeps changes disabled."
     Add-SettingsField -Key "SharePointAdminUrl"   -Caption "SharePoint admin URL:"    -Hint "Optional. The SharePoint admin center address, for example https://contoso-admin.sharepoint.com. OneDrive / SharePoint fills its admin URL box with it. Blank uses https://<name>-admin.sharepoint.com built from the onmicrosoft domain above; if that is blank too, type it in the tool."
+
+    Add-SettingsSection "Offboarding"
+    Add-SettingsField -Key "OffboardMfaName"   -Caption "MFA system:"            -Hint "Optional. Name of your MFA system, for example the product's admin console name. Offboard User adds a step to disable the user and remove their enrolled devices there. Blank, with no address below, leaves the step out."
+    Add-SettingsField -Key "OffboardMfaUrl"    -Caption "MFA admin address:"     -Hint "Optional. Web address of the MFA admin console. Offboard User's MFA step gets a button that opens it."
+    Add-SettingsField -Key "OffboardAccessName" -Caption "Access control system:" -Hint "Optional. Name of the badge or physical access system. Offboard User adds a step to disable the user's card there. Blank, with no host below, leaves the step out."
+    Add-SettingsField -Key "OffboardAccessHost" -Caption "Access control host:"   -Hint "Optional. The server it is administered on (opened with Remote Desktop), or its web address (opened in the browser)."
+    Add-SettingsField -Key "OffboardRmmName"   -Caption "RMM product:"           -Hint "Optional. Name of your remote management (RMM) product. With a report name below, Offboard User adds steps to run that report before a device is wiped and again once it is reassigned."
+    Add-SettingsField -Key "OffboardRmmReport" -Caption "RMM device report:"     -Hint "Optional. Name of the RMM report or script that captures a device's details before it is wiped."
+    Add-SettingsField -Key "OffboardArchiveName" -Caption "Mail archiving product:" -Hint "Optional. Name of your email archiving or backup product. Offboard User's mailbox step adds the steps to preserve and restore mail with it. Blank leaves those steps out."
+    Add-SettingsField -Key "OffboardLobSystems" -Caption "Line-of-business systems:" -Multiline -Hint "Optional. One system per line, as: Name | web address | note - the address and note are optional. Offboard User lists each one to remove the user's account from, with a button for the first five addresses. Blank leaves the step out."
+    Add-SettingsField -Key "OffboardDeviceDocument" -Caption "Device decommission checklist:" -Hint "Optional. A document for decommissioning a PC or laptop: a full path, a web address, or a file name in the MSToolkit install folder. Adds a button to Offboard User's decommission step; it opens under your Windows account."
+    Add-SettingsField -Key "OffboardChecklistDocument" -Caption "Offboarding checklist:" -Hint "Optional. Your offboarding checklist document: a full path, a web address, or a file name in the MSToolkit install folder. Adds a button to Offboard User's final step; it opens under your Windows account."
+    Add-SettingsField -Key "OffboardChecklistLocation" -Caption "Completed checklists filed in:" -Hint "Optional. Free text saying where completed checklists are kept, for example a document library or folder. Shown in Offboard User's final step."
+    Add-SettingsField -Key "OffboardExportFolder" -Caption "Group export folder:"   -Hint "Optional. Folder Offboard User saves group-membership exports to during Do All Local Actions. Blank uses C:\ProgramData\MSToolkit\Logs, which the Logs button opens."
 
     $ButtonY = $SetForm.ClientSize.Height - 44
 
@@ -2779,6 +2831,29 @@ function Update-StatusStrip {
         # still answer LDAP, RDP and everything else, so say exactly what failed.
         $StatusServerLabel.Text = "AD Server: $Server  |  ADWS unreachable (port 9389)"
         $StatusServerLabel.ForeColor = $Palette.Danger
+    }
+}
+
+function Launch-OffboardUserScript {
+    try {
+        $Script = Join-Path $PSScriptRoot "OffboardUser.ps1"
+
+        if (-not (Test-Path $Script)) {
+            Write-OutputBox "ERROR: Offboard User script not found: $Script" ([System.Drawing.Color]::Red)
+            return
+        }
+
+        $SelectedServer = Get-SelectedServer
+        Write-OutputBox "Launching Offboard User using selected AD server: $SelectedServer"
+
+        $Process = Start-Process powershell.exe `
+            -WorkingDirectory $PSScriptRoot `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`" -Server `"$SelectedServer`"" `
+            -PassThru
+        Move-ProcessWindowsToMSToolkitMonitor -Process $Process
+    }
+    catch {
+        Write-OutputBox "ERROR launching Offboard User: $($_.Exception.Message)" ([System.Drawing.Color]::Red)
     }
 }
 
@@ -3636,6 +3711,74 @@ function Unlock-ADUserAccount {
     }
 }
 
+function Set-ADUserPhoneNumber {
+    $Sam = Get-InputBox "Add Phone Number" "Enter username / sAMAccountName:"
+    if (-not $Sam) { return }
+
+    try {
+        $Server = Get-SelectedServer
+
+        $User = Get-ADUser `
+            -Identity $Sam `
+            -Server $Server `
+            -Properties SID,isCriticalSystemObject,DisplayName,telephoneNumber,Title,Department `
+            -ErrorAction Stop
+
+        $CriticalReason = Get-MSToolkitCriticalUserReason -User $User
+        if (Stop-MSToolkitCriticalOperation -ObjectType "User" -DisplayName "$($User.DisplayName) ($($User.SamAccountName))" -Operation "Set telephone number" -Reason $CriticalReason) { return }
+
+        $Current = "$($User.telephoneNumber)"
+        $CurrentText = $Current
+        if (-not $CurrentText) { $CurrentText = "(none set)" }
+
+        $Phone = Get-InputBox "Add Phone Number" "Telephone number for $($User.DisplayName) ($($User.SamAccountName))`r`n`r`nCurrent value: $CurrentText`r`n`r`nEnter the new number, or leave blank to clear it:"
+
+        if ($null -eq $Phone) { return }
+        $Phone = "$Phone".Trim()
+
+        # Replacing an existing number is worth confirming; the old value is gone
+        # once it is written, and this attribute shows in the GAL.
+        $Action = "Set"
+        if (-not $Phone) { $Action = "CLEAR" }
+
+        $Confirm = [System.Windows.Forms.MessageBox]::Show(
+            ("$Action the telephone number on this account?`r`n`r`n" +
+             "Name: $($User.DisplayName)`r`n" +
+             "Username: $($User.SamAccountName)`r`n" +
+             "Title: $($User.Title)`r`n" +
+             "Department: $($User.Department)`r`n" +
+             "$($User.DistinguishedName)`r`n`r`n" +
+             "Current: $CurrentText`r`n" +
+             "New: $(if ($Phone) { $Phone } else { '(cleared)' })"),
+            "Confirm Telephone Number",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question,
+            [System.Windows.Forms.MessageBoxDefaultButton]::Button1)
+
+        if ($Confirm -ne [System.Windows.Forms.DialogResult]::Yes) {
+            Write-OutputBox "Cancelled - the telephone number on $($User.SamAccountName) was not changed."
+            return
+        }
+
+        if ($Phone) {
+            Set-ADUser -Identity $User.DistinguishedName -Server $Server -Replace @{ telephoneNumber = $Phone } -ErrorAction Stop
+        }
+        else {
+            Set-ADUser -Identity $User.DistinguishedName -Server $Server -Clear telephoneNumber -ErrorAction Stop
+        }
+
+        # Read it back rather than assuming the write took.
+        $Updated = Get-ADUser -Identity $User.DistinguishedName -Server $Server -Properties telephoneNumber -ErrorAction Stop
+        $NewText = "$($Updated.telephoneNumber)"
+        if (-not $NewText) { $NewText = "(none set)" }
+
+        Write-OutputBox "Telephone number for $($User.SamAccountName) is now: $NewText (was $CurrentText) using $Server" ([System.Drawing.Color]::Green)
+    }
+    catch {
+        Write-OutputBox "ERROR: $($_.Exception.Message)" ([System.Drawing.Color]::Red)
+    }
+}
+
 function Enable-ADUserAccount {
     $Sam = Get-InputBox "Enable AD User" "Enter username / sAMAccountName:"
     if (-not $Sam) { return }
@@ -3794,6 +3937,60 @@ function Reset-ADUserPassword {
         Write-OutputBox "Password reset for $($User.SamAccountName) using $Server. Change at next logon enabled." ([System.Drawing.Color]::Green)
         $TempPassword = $null
         $SecurePassword = $null
+    }
+    catch {
+        Write-OutputBox "ERROR: $($_.Exception.Message)" ([System.Drawing.Color]::Red)
+    }
+}
+
+function Clear-PasswordChange {
+    # Unticks "User must change password at next logon". AD does this by setting
+    # pwdLastSet to now, so the password's age - and its expiry date - also restart
+    # from now. Read back afterwards rather than trusting the write.
+    $Sam = Get-InputBox "Unforce Password Change" "Enter username / sAMAccountName:"
+    if (-not $Sam) { return }
+
+    try {
+        $Server = Get-SelectedServer
+        $User = Get-ADUser -Identity $Sam -Server $Server -Properties SID,isCriticalSystemObject,DisplayName,DistinguishedName,pwdLastSet,PasswordLastSet,Enabled -ErrorAction Stop
+        $CriticalReason = Get-MSToolkitCriticalUserReason -User $User
+        if (Stop-MSToolkitCriticalOperation -ObjectType "User" -DisplayName "$($User.DisplayName) ($($User.SamAccountName))" -Operation "Unforce password change" -Reason $CriticalReason) { return }
+
+        if ([int64]$User.pwdLastSet -ne 0) {
+            Write-OutputBox "$($User.SamAccountName) is not set to change password at next logon - nothing to do." ([System.Drawing.Color]::DarkOrange)
+            return
+        }
+
+        $Confirm = [System.Windows.Forms.MessageBox]::Show(
+            ("Untick 'User must change password at next logon' for this account?`r`n`r`n" +
+             "Name: $($User.DisplayName)`r`n" +
+             "Username: $($User.SamAccountName)`r`n" +
+             "Enabled: $($User.Enabled)`r`n" +
+             "$($User.DistinguishedName)`r`n`r`n" +
+             "The user will keep their current password. Its age restarts from now, so it will next expire a full password period from today."),
+            "Confirm Unforce Password Change",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Question,
+            [System.Windows.Forms.MessageBoxDefaultButton]::Button2)
+
+        if ($Confirm -ne [System.Windows.Forms.DialogResult]::Yes) {
+            Write-OutputBox "Cancelled - $($User.SamAccountName) still has to change password at next logon."
+            return
+        }
+
+        Set-ADUser `
+            -Identity $User.DistinguishedName `
+            -ChangePasswordAtLogon $false `
+            -Server $Server `
+            -ErrorAction Stop
+
+        $Updated = Get-ADUser -Identity $User.DistinguishedName -Server $Server -Properties pwdLastSet,PasswordLastSet -ErrorAction Stop
+        if ([int64]$Updated.pwdLastSet -eq 0) {
+            Write-OutputBox "The change did not take - $($User.SamAccountName) is still set to change password at next logon on $Server." ([System.Drawing.Color]::Red)
+            return
+        }
+
+        Write-OutputBox "Cleared change password at next logon for $($User.SamAccountName) using $Server. Password last set now reads $($Updated.PasswordLastSet)." ([System.Drawing.Color]::Green)
     }
     catch {
         Write-OutputBox "ERROR: $($_.Exception.Message)" ([System.Drawing.Color]::Red)
@@ -7174,12 +7371,15 @@ function Add-Button {
 # Left sidebar: Users and Groups
 Add-Section -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Users"
 Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Create New User" -Action { Launch-NewADUserScript } -ForeColor ([System.Drawing.Color]::ForestGreen)
+Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Offboard User" -Action { Launch-OffboardUserScript } -ForeColor ([System.Drawing.Color]::Red)
 Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Get User" -Action { Show-ADUserInfo }
 Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Get User Groups" -Action { Get-ADUserGroups }
 Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Get User OU" -Action { Get-ADUserOU }
 Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Unlock User" -Action { Unlock-ADUserAccount }
 Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Reset Password" -Action { Reset-ADUserPassword }
 Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Force Password Change" -Action { Force-PasswordChange }
+Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Unforce Password Change" -Action { Clear-PasswordChange }
+Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Add Phone Number" -Action { Set-ADUserPhoneNumber }
 Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Enable User" -Action { Enable-ADUserAccount }
 Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Disable User" -Action { Disable-ADUserAccount }
 Add-Button -Panel $LeftButtonPanel -YPosition ([ref]$LeftY) -Text "Investigate Lockout" -Action { Invoke-InvestigateAccountLockoutInTool } -ForeColor ([System.Drawing.Color]::ForestGreen)
@@ -7348,6 +7548,11 @@ Write-OutputField `
 Write-OutputField `
     -Label "Create New User" `
     -Value "Launches NewADUser.ps1 from the same folder in its own window." `
+    -LabelColor $StartupNavy `
+    -ValueColor $StartupBlue
+Write-OutputField `
+    -Label "Offboard User" `
+    -Value "Departing employee checklist: disables the account, removes groups, clears the phone, replicates and syncs, then walks through the remaining steps set in Settings > Offboarding." `
     -LabelColor $StartupNavy `
     -ValueColor $StartupBlue
 Write-OutputField `
