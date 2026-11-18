@@ -1901,7 +1901,7 @@ function Invoke-ExoMessageTrace {
 
         Write-AppLog "Tracing $($Start.ToString('yyyy-MM-dd HH:mm')) to $($End.ToString('yyyy-MM-dd HH:mm')). Sender '$Sender', recipient '$Recipient'."
 
-        $Messages = Get-ExoTraceRows -Sender $Sender -Recipient $Recipient -Start $Start -End $End -Status $script:cboTraceStatus.SelectedItem
+        $Messages = @(Get-ExoTraceRows -Sender $Sender -Recipient $Recipient -Start $Start -End $End -Status $script:cboTraceStatus.SelectedItem)
 
         if ($Subject) {
             $Messages = @($Messages | Where-Object { "$($_.Subject)" -like "*$Subject*" })
@@ -2056,7 +2056,7 @@ function Invoke-ExoGroupDeliveryCheck {
 
         # What the group address itself received, which is the baseline everything
         # else is compared against.
-        $GroupMessages = Get-ExoTraceRows -Sender $Sender -Recipient ([string]$Group.PrimarySmtpAddress) -Start $Start -End $End -Status 'Any'
+        $GroupMessages = @(Get-ExoTraceRows -Sender $Sender -Recipient ([string]$Group.PrimarySmtpAddress) -Start $Start -End $End -Status 'Any')
         if ($Subject) { $GroupMessages = @($GroupMessages | Where-Object { "$($_.Subject)" -like "*$Subject*" }) }
 
         Write-AppLog "The group address received $($GroupMessages.Count) matching message(s) in that window."
@@ -2075,7 +2075,7 @@ function Invoke-ExoGroupDeliveryCheck {
             $LastStatus = ''
 
             try {
-                $MemberMessages = Get-ExoTraceRows -Sender $Sender -Recipient $Address -Start $Start -End $End -Status 'Any'
+                $MemberMessages = @(Get-ExoTraceRows -Sender $Sender -Recipient $Address -Start $Start -End $End -Status 'Any')
                 if ($Subject) { $MemberMessages = @($MemberMessages | Where-Object { "$($_.Subject)" -like "*$Subject*" }) }
 
                 $Delivered = @($MemberMessages | Where-Object { "$($_.Status)" -match 'Delivered|Resolved' }).Count
