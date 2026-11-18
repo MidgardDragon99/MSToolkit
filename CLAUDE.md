@@ -172,17 +172,22 @@ The main branch is `main`. **There is no remote yet.** The `git pull` and
 - Tell the maintainer exactly what changed and what to test in the GUI.
 - Merge to `main` only after they say it tested OK:
   `git switch main`, `git merge --no-ff <branch>`, `git branch -d <branch>`.
-- **The maintainer runs every push.** Claude never runs `git push`: when `main`
-  is ready, run `git status` and `git ls-remote origin`, then give the exact
-  command (`git push origin main`) and verify afterwards with
-  `git ls-remote origin`, `git remote -v` and `git status`. Never prepare a push
-  of a branch or tag they haven't asked for.
+- **Ask in the chat before every push, and run it only after the maintainer
+  says yes** to that push. Before asking, run `git status` and
+  `git ls-remote origin`, and say exactly what will be pushed (branch, commit
+  range). Push `main` only (`git push origin main`) unless they name another
+  branch or tag. A yes covers that one push, not later ones. Afterwards verify
+  with `git ls-remote origin`, `git remote -v` and `git status`.
+- Never force-push (`--force`, `--force-with-lease`, `-f`, a `+` refspec). The
+  maintainer's local, git-ignored `.claude/settings.local.json` allows
+  `git push` and denies the `--force` / `-f` forms; that permission is not
+  approval, which still has to be asked for each time.
 - Tag each release they publish or deploy: `git tag v<version>` or
-  `released-YYYY-MM-DD`; they push it with `git push origin <tag>`.
+  `released-YYYY-MM-DD`, pushed with `git push origin <tag>` after asking.
 
 **Builds and hand-over (standing rule)**
 
-The maintainer only runs the installers and the git push. So:
+The maintainer only runs the installers. So:
 
 - **Whenever handing over a test-batch or a test list, build first.** Run
   `Build\Build-All.bat` on exactly what is to be tested, show the summary table
