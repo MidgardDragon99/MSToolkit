@@ -172,10 +172,26 @@ The main branch is `main`. **There is no remote yet.** The `git pull` and
 - Tell the maintainer exactly what changed and what to test in the GUI.
 - Merge to `main` only after they say it tested OK:
   `git switch main`, `git merge --no-ff <branch>`, `git branch -d <branch>`.
-- **Push only when the maintainer says to**: `git push origin main`. Never push a
-  branch or tag they haven't asked for.
+- **The maintainer runs every push.** Claude never runs `git push`: when `main`
+  is ready, run `git status` and `git ls-remote origin`, then give the exact
+  command (`git push origin main`) and verify afterwards with
+  `git ls-remote origin`, `git remote -v` and `git status`. Never prepare a push
+  of a branch or tag they haven't asked for.
 - Tag each release they publish or deploy: `git tag v<version>` or
-  `released-YYYY-MM-DD`, pushed with `git push origin <tag>` when they say.
+  `released-YYYY-MM-DD`; they push it with `git push origin <tag>`.
+
+**Builds and hand-over (standing rule)**
+
+The maintainer only runs the installers and the git push. So:
+
+- **Whenever handing over a test-batch or a test list, build first.** Run
+  `Build\Build-All.bat` on exactly what is to be tested, show the summary table
+  (OK / FAILED / SKIPPED per step), and say which package to run - normally
+  `MSToolkit-Install.exe`, or `install.intunewin` for an Intune test.
+- **The same after merges to `main`:** build from `main`, show the summary
+  table, and say which installer to run, before handing over the push command.
+- Parse-check every script before building. Never hand over a test list for a
+  build that failed.
 
 **Rolling back**
 
