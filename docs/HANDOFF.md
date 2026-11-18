@@ -235,6 +235,11 @@ refused.
   The confirmation lists every group by name - Add, BLOCKED with the reason, NOT
   READ - only allowed groups are added, and the BLOCKED and NOT READ lists are
   repeated in the output after the run.
+- "User must change password at next logon" is ticked every time the form opens
+  and after each account is created (never remembered), and can be unticked.
+  `New-ADUser -ChangePasswordAtLogon` uses its value; the confirmation and the
+  output show "Must change password at next logon: Yes/No", and the final
+  verification checks it against `pwdLastSet` (0 = must change).
 
 ### Compare-UserGroups.ps1
 

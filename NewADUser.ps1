@@ -1417,7 +1417,8 @@ function Show-NewUserConfirmation {
         [string]$MirrorSummary,
         [object[]]$MirrorGroupList = @(),
         [string]$AddressSummary,
-        [string]$ManagerSummary
+        [string]$ManagerSummary,
+        [bool]$MustChangePassword = $true
     )
 
     $ConfirmForm = New-Object System.Windows.Forms.Form
@@ -1517,11 +1518,12 @@ function Show-NewUserConfirmation {
     Add-ConfirmationField "Username" $Sam
     Add-ConfirmationField "Microsoft 365 UPN / Sign-in" $UPN
     Add-ConfirmationField "Company" $(if ($CompanyName) { $CompanyName } else { "(not set in MSToolkit Settings - left blank)" })
+    $MustChangeColor = if ($MustChangePassword) { (Get-MSToolkitThemePalette).Danger } else { (Get-MSToolkitThemePalette).Warning }
     Add-ConfirmationField `
-        "Password Must Be Changed at Next Logon" `
-        "Yes" `
-        ((Get-MSToolkitThemePalette).Danger) `
-        ((Get-MSToolkitThemePalette).Danger)
+        "Must change password at next logon" `
+        $(if ($MustChangePassword) { "Yes" } else { "No - the user keeps the initial password" }) `
+        $MustChangeColor `
+        $MustChangeColor
 
     Add-ConfirmationSection "EMAIL"
     Add-ConfirmationField `
@@ -1607,6 +1609,10 @@ function New-MSToolkitADUser {
         $AddressUserSam = $AddressBox.Text.Trim()
         $ManagerUserSam = $ManagerBox.Text.Trim()
         $Password = $PasswordBox.Text
+        # Read once, so the confirmation, the account and the verification all use
+        # the same value even if the box is clicked while the confirmation is open.
+        $MustChangePassword = [bool]$ChangePasswordCheckbox.Checked
+        $MustChangePasswordText = if ($MustChangePassword) { 'Yes' } else { 'No' }
 
         # Refuse rather than create a half-formed account.
         $MissingNaming = New-Object System.Collections.Generic.List[string]
@@ -1906,7 +1912,8 @@ function New-MSToolkitADUser {
             -MirrorSummary $MirrorSummary `
             -MirrorGroupList $MirrorGroupList `
             -AddressSummary $AddressSummary `
-            -ManagerSummary $ManagerSummary
+            -ManagerSummary $ManagerSummary `
+            -MustChangePassword $MustChangePassword
 
         if ($Confirm -ne [System.Windows.Forms.DialogResult]::Yes) {
             Write-OutputBox "User creation cancelled."
@@ -1928,7 +1935,7 @@ function New-MSToolkitADUser {
             EmailAddress          = $MailAddress
             AccountPassword       = $SecurePassword
             Enabled               = $true
-            ChangePasswordAtLogon = $true
+            ChangePasswordAtLogon = $MustChangePassword
             Path                  = $OUPath
             Server                = $Server
         }
@@ -2003,7 +2010,7 @@ function New-MSToolkitADUser {
         Write-OutputBox "Added secondary SMTP alias: $UPN" ([System.Drawing.Color]::Green)
         if ($OnMicrosoftAliasAddress) { Write-OutputBox "Added Microsoft 365 tenant alias: $OnMicrosoftAliasAddress" ([System.Drawing.Color]::Green) }
         if ($OnMicrosoftMailAliasAddress) { Write-OutputBox "Added Microsoft 365 routing alias: $OnMicrosoftMailAliasAddress" ([System.Drawing.Color]::Green) }
-        Write-OutputBox "Set user must change password at next logon: Yes" ([System.Drawing.Color]::Green)
+        Write-OutputBox "Must change password at next logon: $MustChangePasswordText" ([System.Drawing.Color]::Green)
 
         if ($AddressUser) {
             Write-OutputBox "Cloned address from $($AddressUser.SamAccountName):" ([System.Drawing.Color]::Green)
@@ -2061,13 +2068,20 @@ function New-MSToolkitADUser {
         $CreatedUser = Get-ADUser `
             -Identity $Sam `
             -Server $Server `
-            -Properties DisplayName,Enabled,Title,Department,Company,Manager,UserPrincipalName,EmailAddress,proxyAddresses,streetAddress,l,st,postalCode,c,co,countryCode,WhenCreated,DistinguishedName,MemberOf `
+            -Properties DisplayName,Enabled,Title,Department,Company,Manager,UserPrincipalName,EmailAddress,proxyAddresses,streetAddress,l,st,postalCode,c,co,countryCode,WhenCreated,DistinguishedName,MemberOf,pwdLastSet `
             -ErrorAction Stop
 
         Write-ResultSeparator
         Write-OutputBox "FINAL VERIFICATION" ([System.Drawing.Color]::FromArgb(31,58,93))
 
         $VerificationFailed = $false
+
+        # pwdLastSet = 0 is how Active Directory records "must change password at
+        # next logon"; any other value means the password set at creation stands.
+        $PwdLastSetZero = ([int64]$CreatedUser.pwdLastSet -eq 0)
+        $MustChangeOk = ($PwdLastSetZero -eq $MustChangePassword)
+        Write-VerificationResult -Item 'Must change password at next logon' -Passed $MustChangeOk -Detail "$MustChangePasswordText (pwdLastSet $(if ($PwdLastSetZero) { '= 0' } else { 'is set' }))"
+        if (-not $MustChangeOk) { $VerificationFailed = $true }
 
         $UpnOk = ($CreatedUser.UserPrincipalName -eq $UPN)
         Write-VerificationResult -Item 'Microsoft 365 UPN / sign-in' -Passed $UpnOk -Detail $CreatedUser.UserPrincipalName
@@ -2442,8 +2456,10 @@ $ChangePasswordCheckbox = New-Object System.Windows.Forms.CheckBox
 $ChangePasswordCheckbox.Text = "User must change password at next logon"
 $ChangePasswordCheckbox.Location = New-Object System.Drawing.Point(($Left + $LabelWidth),$Top)
 $ChangePasswordCheckbox.Size = New-Object System.Drawing.Size(350,24)
+# Ticked every time the form opens and after each account is created
+# (Clear-FormFields); the last choice is never remembered. Untick it to let the
+# user keep the initial password.
 $ChangePasswordCheckbox.Checked = $true
-$ChangePasswordCheckbox.Enabled = $false
 $ChangePasswordCheckbox.ForeColor = [System.Drawing.Color]::FromArgb(65,65,65)
 $ChangePasswordCheckbox.Font = New-Object System.Drawing.Font("Segoe UI",9)
 $form.Controls.Add($ChangePasswordCheckbox)
@@ -2566,7 +2582,7 @@ if ((-not $UPNDomain) -or (-not $MailDomain)) {
 }
 Write-StartupField `
     -Label "Password at Next Logon" `
-    -Value "User must change password is always enabled" `
+    -Value "User must change password is ticked by default each time; untick it to let the user keep the initial password" `
     -ValueColor $StartupPalette.Warning
 
 Write-StartupSection "CLONE / MIRROR OPTIONS"
