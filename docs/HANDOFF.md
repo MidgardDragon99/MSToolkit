@@ -229,6 +229,13 @@ Parameters: `-ThemeMode`, `-DefaultServer`. Creates an account from settings
 check of every copied attribute. OU picker starts at `OUUsers`; the domain root is
 refused.
 
+- Mirror Groups From refuses a critical mirror user (SID / RID,
+  `isCriticalSystemObject`) before the confirmation, and nothing is created.
+- Each mirrored group is read with SID and `isCriticalSystemObject` and checked.
+  The confirmation lists every group by name - Add, BLOCKED with the reason, NOT
+  READ - only allowed groups are added, and the BLOCKED and NOT READ lists are
+  repeated in the output after the run.
+
 ### Compare-UserGroups.ps1
 
 Parameters: `-Server`, `-ThemeMode`. Compares two users' direct AD group
@@ -532,8 +539,7 @@ across all files. **All untested** (section 8).
 
 ### Deferred backlog - **don't start unless asked**
 
-- NewADUser: block critical groups from mirroring and list them as blocked;
-  optionally create-disabled -> configure -> verify -> enable.
+- NewADUser: optionally create-disabled -> configure -> verify -> enable.
 - M365-Group-Compare: hard-block add/remove on `isAssignableToRole` groups
   (currently labelled only).
 - Remove User From All Sessions: optional file-server setting for SMB sessions.
