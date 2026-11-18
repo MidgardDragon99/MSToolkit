@@ -476,11 +476,22 @@ A checklist for a departing employee: it runs the Active Directory work itself, 
 - **Load User** resolves the account in AD and shows it prominently as **LOADED:** with name, username, title, department, manager, state and DN. A failed lookup clears whatever was loaded, and every destructive action re-checks that the picker still matches the loaded account, refusing if it doesn't. The user list follows the Users and Admin accounts OUs.
 - **Steps the tool performs** tick themselves only after the change is verified: disable the account, export and remove security group memberships (protected groups, identified by SID/RID, are never removed), clear the telephone and mobile numbers, replicate the selected DC (`repadmin /syncall /AdeP`), and an Entra Connect delta sync when a sync server is set.
 - **Do All Local Actions** runs all of those in order after one confirmation, exporting the groups first so the list survives the removal, and names anything that didn't complete.
-- **Manual steps** are ticked by hand. Which ones appear depends on **Settings > Offboarding**; with everything set there are 18 steps in total. In order after the directory sync:
-  - **Entra and Intune - sessions and devices**, straight after the sync: the synced disable blocks new sign-ins and revoking ends the sessions already open. **Open IntuneTools** opens it in its offboarding user mode (below), or brings it forward if it's already open from here; a second button opens the Intune admin center instead.
-  - **Update the offboarding ticket** and **PC / laptop decommission** each have **Done** and **Deferred - I intend to do this later**. Either ticks the step, ticking the box by hand counts as Done, and the copied checklist records which (`- Done` or `- DEFERRED, to be done later`).
-  - **Mailbox handover**, **OneDrive handover** and **Retention, phone and licences** each open their tool signed in, with the departing user loaded and the manager (from the AD `manager` attribute) filled in as the delegate: Exchange Online on its Delegation tab, OneDrive on its Offboarding tab, and the phone tool with call forwarding loaded. With no manager set, the tool opens with the delegate box empty.
-  - Also: MFA, physical access, distribution and Microsoft 365 groups (opening Distro and Group Compare with the user loaded), the disabled-OU reminder, line-of-business systems and filing the checklist.
+- **Manual steps** are ticked by hand. Which ones appear depends on **Settings > Offboarding**; with everything set there are 18 steps in total, numbered in this order (a step whose setting is blank is left out and the rest close up):
+  1. Active Directory - disable the account *(local action)*
+  2. Active Directory - remove security group memberships *(local action)*
+  3. Remove distribution group memberships - opens Distro Compare with the user loaded
+  4. Remove Microsoft 365 group memberships - opens Group Compare with the user loaded
+  5. Active Directory - clear the phone number *(local action)*
+  6. Replicate the selected domain controller *(local action)*
+  7. Entra Connect delta sync *(local action, when a sync server is set)*
+  8. **Entra and Intune - sessions and devices**, straight after the sync: the synced disable blocks new sign-ins and revoking ends the sessions already open. **Open IntuneTools** opens it in its offboarding user mode (below), or brings it forward if it's already open from here; a second button opens the Intune admin center instead.
+  9. MFA - disable the user and remove their enrolled devices *(when an MFA system is set)*
+  10. Physical access - disable the badge or access card *(when an access system is set)*
+  11. **Update the offboarding ticket** and 12. **PC / laptop decommission** each have **Done** and **Deferred - I intend to do this later**. Either ticks the step, ticking the box by hand counts as Done, and the copied checklist records which (`- Done` or `- DEFERRED, to be done later`).
+  13. **Mailbox handover**, 14. **OneDrive handover** and 15. **Retention, phone and licences** each open their tool signed in, with the departing user loaded and the manager (from the AD `manager` attribute) filled in as the delegate: Exchange Online on its Delegation tab, OneDrive on its Offboarding tab, and the phone tool with call forwarding loaded. With no manager set, the tool opens with the delegate box empty.
+  16. Calendar reminder - move the account to the disabled OU
+  17. Line-of-business application accounts *(when any are listed)*
+  18. File the completed checklist
 - A disabled account shows **DISABLED** in red on the **LOADED:** line.
 - **Undo...** reverses a previous run, even days later: group memberships first, then phone numbers, then re-enabling the account (unless it was already disabled before the run). Each run is journalled to `%LOCALAPPDATA%\MSToolkit\Offboard-Undo` in the admin account's own profile, written after every change. Undo refuses a record whose SID no longer matches the account, never adds anyone to protected groups, and only covers Active Directory - everything else is put back by hand.
 - **Copy Checklist** and **Finish** produce a record for the ticket: the user's details, who ran it and when, the export path, and every step as `[x]` or `[ ]` with sub-steps beneath. Finish also writes it to a text file and opens it.

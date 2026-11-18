@@ -271,14 +271,18 @@ assigned at creation so there are no gaps.
   sync (recognises "already running").
 - **Do All Local Actions** - one confirmation; exports groups first; doesn't stop
   at the first failure; names anything outstanding.
-- **Manual steps**, in order after the sync: Entra and Intune (opens IntuneTools
-  in user mode, `-ReuseWindow`); update the ticket and PC decommission (both
-  **Done / Deferred**); Mailbox handover, OneDrive handover, Retention/phone/
-  licences (each opens its tool with `-ManageUser`, `-AutoConnect` and the
-  manager's UPN as `-Delegate`); disabled-OU reminder; MFA; physical access;
-  distro and M365 group removal (Distro / Group Compare with the user loaded);
-  line-of-business systems; file the checklist. **Unverified - check the code**
-  for the exact final order of MFA / access relative to the AD steps.
+- **Step order** (as created in the code; numbers are assigned at creation):
+  1 disable (AD), 2 security groups (AD), 3 distro groups and 4 M365 groups
+  (Distro / Group Compare with the user loaded), 5 clear phone (AD), 6 replicate,
+  7 delta sync, 8 Entra and Intune (opens IntuneTools in user mode,
+  `-ReuseWindow`; straight after the sync so sessions are revoked as soon as the
+  disable reaches the cloud), 9 MFA, 10 physical access, 11 update the ticket and
+  12 PC decommission (both **Done / Deferred**), 13 Mailbox handover, 14 OneDrive
+  handover, 15 Retention/phone/licences (each opens its tool with `-ManageUser`,
+  `-AutoConnect` and the manager's UPN as `-Delegate`), 16 disabled-OU reminder,
+  17 line-of-business systems, 18 file the checklist. MFA and physical access
+  come after the local AD actions, matching the internal build. Nothing in the
+  code refers to a step by number.
 - **LOADED:** line; a disabled account shows **DISABLED** in a separate red label
   placed with `TextRenderer.MeasureText`.
 - **Undo...** - JSON journal per run in `%LOCALAPPDATA%\MSToolkit\Offboard-Undo`,

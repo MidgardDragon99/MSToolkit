@@ -4619,37 +4619,10 @@ function ConvertTo-OffboardLiteral {
     return "'" + ($Text -replace "'", "''") + "'"
 }
 
-# MFA - only when an MFA system is set
-if ($script:OffboardMfaName -or $script:OffboardMfaUrl) {
-    $MfaName = if ($script:OffboardMfaName) { $script:OffboardMfaName } else { 'the MFA system' }
-    $MfaLabels = @(); $MfaActions = @()
-    if ($script:OffboardMfaUrl) {
-        $MfaLabels += "Open $MfaName"
-        $MfaActions += [scriptblock]::Create("Open-OffboardLink -Url $(ConvertTo-OffboardLiteral $script:OffboardMfaUrl) -Label $(ConvertTo-OffboardLiteral $MfaName)")
-    }
-    $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "MFA - disable the user and remove their enrolled devices" `
-        -Instructions "Sign in to $MfaName and work through both parts." `
-        -SubSteps @(
-            "Disable the user in $MfaName.",
-            "Remove their enrolled phone or authenticator devices."
-        ) `
-        -ButtonLabels $MfaLabels `
-        -ButtonActions $MfaActions
-}
-
-# Physical access - only when an access system is set
-if ($script:OffboardAccessName -or $script:OffboardAccessHost) {
-    $AccessName = if ($script:OffboardAccessName) { $script:OffboardAccessName } else { 'the access control system' }
-    $AccessLabels = @(); $AccessActions = @()
-    if ($script:OffboardAccessHost) {
-        $AccessLabels += $(if ($script:OffboardAccessHost -match '^https?://') { "Open $AccessName" } else { "Remote Desktop to $($script:OffboardAccessHost)" })
-        $AccessActions += { Open-OffboardAccessSystem }
-    }
-    $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Physical access - disable the badge or access card" `
-        -Instructions "Disable the user's badge or access card in $AccessName." `
-        -ButtonLabels $AccessLabels `
-        -ButtonActions $AccessActions
-}
+# Order: the local Active Directory actions first (disable, groups, phone,
+# replicate, delta sync - what Do All Local Actions runs), with the distribution
+# and Microsoft 365 group removals beside the AD groups; then Entra and Intune
+# straight after the sync; then MFA and physical access; then the rest.
 
 # Disable the AD account
 $script:chkDisable = New-OffboardStep -Number (Get-NextStepNumber) -Title "Active Directory - disable the account" `
@@ -4736,6 +4709,39 @@ $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Entra and Intune -
         { Start-OffboardM365Tool -ScriptName "IntuneTools.ps1" -Label "IntuneTools" -ReuseWindow -ExtraArguments $script:OffboardIntuneArgs },
         { Open-OffboardLink -Url "https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview" -Label "Intune devices" }
     )
+
+# MFA - after the local actions and the Entra/Intune step. Only when an MFA
+# system is set.
+if ($script:OffboardMfaName -or $script:OffboardMfaUrl) {
+    $MfaName = if ($script:OffboardMfaName) { $script:OffboardMfaName } else { 'the MFA system' }
+    $MfaLabels = @(); $MfaActions = @()
+    if ($script:OffboardMfaUrl) {
+        $MfaLabels += "Open $MfaName"
+        $MfaActions += [scriptblock]::Create("Open-OffboardLink -Url $(ConvertTo-OffboardLiteral $script:OffboardMfaUrl) -Label $(ConvertTo-OffboardLiteral $MfaName)")
+    }
+    $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "MFA - disable the user and remove their enrolled devices" `
+        -Instructions "Sign in to $MfaName and work through both parts." `
+        -SubSteps @(
+            "Disable the user in $MfaName.",
+            "Remove their enrolled phone or authenticator devices."
+        ) `
+        -ButtonLabels $MfaLabels `
+        -ButtonActions $MfaActions
+}
+
+# Physical access - straight after MFA. Only when an access system is set.
+if ($script:OffboardAccessName -or $script:OffboardAccessHost) {
+    $AccessName = if ($script:OffboardAccessName) { $script:OffboardAccessName } else { 'the access control system' }
+    $AccessLabels = @(); $AccessActions = @()
+    if ($script:OffboardAccessHost) {
+        $AccessLabels += $(if ($script:OffboardAccessHost -match '^https?://') { "Open $AccessName" } else { "Remote Desktop to $($script:OffboardAccessHost)" })
+        $AccessActions += { Open-OffboardAccessSystem }
+    }
+    $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Physical access - disable the badge or access card" `
+        -Instructions "Disable the user's badge or access card in $AccessName." `
+        -ButtonLabels $AccessLabels `
+        -ButtonActions $AccessActions
+}
 
 # The ticket, so other teams can start
 $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Update the offboarding ticket" -DoneDeferred `
