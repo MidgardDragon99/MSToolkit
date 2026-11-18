@@ -15,7 +15,6 @@ echo Validating install source files...
 
 for %%F in (
   "MSToolkit.EXE"
-  "MSToolkit.lnk"
   "Compare-UserGroups.ps1"
   "MSToolkit.ps1"
   "MSToolkit.ico"
@@ -54,7 +53,6 @@ del /f /q MSToolkit-Install.7z MSToolkit-Install.exe MSToolkit-Uninstall.7z MSTo
 
 "%SevenZip%" a -t7z MSToolkit-Install.7z ^
   MSToolkit.EXE ^
-  MSToolkit.lnk ^
   Compare-UserGroups.ps1 ^
   MSToolkit.ps1 ^
   MSToolkit.ico ^

@@ -12,7 +12,6 @@ $ShortcutPath = Join-Path $env:PUBLIC "Desktop\MSToolkit.lnk"
 
 $PayloadFiles = @(
     "MSToolkit.EXE",
-    "MSToolkit.lnk",
     "Compare-UserGroups.ps1",
     "MSToolkit.ps1",
     "MSToolkit.ico",
@@ -154,6 +153,13 @@ New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 foreach ($File in $PayloadFiles) {
     $SourcePath = Join-Path $PSScriptRoot $File
     Copy-Item -LiteralPath $SourcePath -Destination (Join-Path $InstallDir $File) -Force
+}
+
+# Older packages also copied MSToolkit.lnk into the install folder. It is no longer
+# shipped (the desktop shortcut is created below), so remove a leftover copy.
+$OldPackagedShortcut = Join-Path $InstallDir "MSToolkit.lnk"
+if (Test-Path -LiteralPath $OldPackagedShortcut) {
+    Remove-Item -LiteralPath $OldPackagedShortcut -Force -ErrorAction SilentlyContinue
 }
 
 $IcaclsExe = Join-Path $env:SystemRoot "System32\icacls.exe"

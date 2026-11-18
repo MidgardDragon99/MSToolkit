@@ -531,7 +531,6 @@ across all files. **All untested** (section 8).
 - M365-Group-Compare: hard-block add/remove on `isAssignableToRole` groups
   (currently labelled only).
 - Remove User From All Sessions: optional file-server setting for SMB sessions.
-- Stop shipping `MSToolkit.lnk` (the installer creates the shortcut anyway).
 
 ---
 
@@ -543,8 +542,9 @@ across all files. **All untested** (section 8).
   untrusted; the installer deletes them.
 - **Old EXEs and `.intunewin` packages** built before the runtime-folder fix or
   before the latest changes. Rebuild from the repository.
-- **The packaged `MSToolkit.lnk`** carries the SID of the account that created it.
-  Harmless to function, but don't publish one made on a domain account.
+- **`MSToolkit.lnk` in old packages** carries the SID of the account that created
+  it. It is no longer shipped or committed (the installer creates the shortcut);
+  don't publish one made on a domain account.
 - **Copies in someone's profile, OneDrive or a share** - may be stale and are
   user-writable. Edit in the repository, install from a fresh build.
 - **Memory of earlier versions.** The repository is authoritative; uploaded or
