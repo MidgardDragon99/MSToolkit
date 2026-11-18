@@ -1745,6 +1745,11 @@ function Invoke-DeviceAction {
     )
     if (-not (Assert-Connected)) { return }
 
+    # Every Graph POST sends a body: Retire, Sync, Restart, Shut Down and the
+    # Rotate actions take none, so send an empty JSON object for them. (Invoke-Graph
+    # would also substitute it; this keeps the request explicit at the call.)
+    if ($null -eq $Body) { $Body = '{}' }
+
     $ids = Get-SelectedDeviceIds
     if ($ids.Count -eq 0) { Show-InfoBox 'Select one or more devices first.'; return }
 
@@ -2277,7 +2282,7 @@ function Clear-AutopilotUser {
 
     Start-Busy 'Unassigning user...'
     try {
-        Invoke-Graph -Uri "/deviceManagement/windowsAutopilotDeviceIdentities/$($ids[0])/unassignUserFromDevice" -Method POST -Raw | Out-Null
+        Invoke-Graph -Uri "/deviceManagement/windowsAutopilotDeviceIdentities/$($ids[0])/unassignUserFromDevice" -Method POST -Body '{}' -Raw | Out-Null
         Stop-Busy 'User unassigned'
         Load-AutopilotDevices
     } catch {
@@ -2311,7 +2316,7 @@ function Sync-AutopilotService {
     if (-not (Assert-Connected)) { return }
     Start-Busy 'Requesting Autopilot service sync...'
     try {
-        Invoke-Graph -Uri '/deviceManagement/windowsAutopilotSettings/sync' -Method POST -Beta -Raw | Out-Null
+        Invoke-Graph -Uri '/deviceManagement/windowsAutopilotSettings/sync' -Method POST -Body '{}' -Beta -Raw | Out-Null
         Stop-Busy 'Autopilot sync requested'
         Show-InfoBox 'Autopilot service sync requested. This can only run every 10 minutes.'
     } catch {
