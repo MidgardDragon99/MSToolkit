@@ -2065,10 +2065,19 @@ function New-MSToolkitADUser {
         }
 
         $CurrentStep = 'Final verification'
+        # Read back every attribute the address clone wrote, so the check below
+        # never compares against a property that simply wasn't loaded (Office,
+        # physicalDeliveryOfficeName, was missing from the list and always
+        # "failed" although it had been written).
+        $VerifyProperties = @(
+            'DisplayName','Enabled','Title','Department','Company','Manager','UserPrincipalName','EmailAddress','proxyAddresses',
+            'streetAddress','l','st','postalCode','c','co','countryCode','physicalDeliveryOfficeName',
+            'WhenCreated','DistinguishedName','MemberOf','pwdLastSet'
+        ) + @($AddressAttributes.Keys) | Select-Object -Unique
         $CreatedUser = Get-ADUser `
             -Identity $Sam `
             -Server $Server `
-            -Properties DisplayName,Enabled,Title,Department,Company,Manager,UserPrincipalName,EmailAddress,proxyAddresses,streetAddress,l,st,postalCode,c,co,countryCode,WhenCreated,DistinguishedName,MemberOf,pwdLastSet `
+            -Properties $VerifyProperties `
             -ErrorAction Stop
 
         Write-ResultSeparator
@@ -2171,6 +2180,7 @@ function New-MSToolkitADUser {
         else {
             Write-OutputBox "Manager: "
         }
+        Write-OutputBox "Office: $($CreatedUser.physicalDeliveryOfficeName)"
         Write-OutputBox "Street: $($CreatedUser.streetAddress)"
         Write-OutputBox "City: $($CreatedUser.l)"
         Write-OutputBox "State: $($CreatedUser.st)"
