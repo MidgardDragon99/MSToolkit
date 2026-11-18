@@ -404,13 +404,19 @@ Reports, Settings. Signs in with the tenant's own app registration, delegated
   `Launch-MSToolkit.bat` from its own folder in a visible console. It replaced
   an IExpress EXE that embedded `Launcher.ps1` and so ran a stale copy after
   every update. `Launcher.ps1` is still packaged but no longer used.
+- **Version:** `VERSION` in the repo root is the only place it is set. The build
+  stamps it into `MSToolkit.EXE`; the installer reads the EXE's product version
+  and writes `DisplayVersion` to the Apps & Features key (removed with the key on
+  uninstall). Intune detects on that value (README 4.5), so an older install -
+  including any from before 1.1.0, which has no `DisplayVersion` - is upgraded.
 - `Build-Install-Uninstall-Only.cmd` builds `MSToolkit-Install.exe` /
   `MSToolkit-Uninstall.exe` (7-Zip SFX, running `install.cmd` / `uninstall.cmd`).
   Its validation and archive lists must match the installer's `$PayloadFiles`.
 - Filenames are canonical - no version or date suffixes.
 - Intune: install `install.cmd` / uninstall `uninstall.cmd` (as packaged), System
   context. Upgrades need detection that fails while `.ps1` files remain in
-  `C:\ProgramData\MSToolkit`, or old installs keep the writable layout.
+  `C:\ProgramData\MSToolkit`, or old installs keep the writable layout; the
+  `DisplayVersion` rule does that, because those old installs have no version.
 
 ---
 

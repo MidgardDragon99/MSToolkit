@@ -16,8 +16,10 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("MSToolkit")]
 [assembly: AssemblyProduct("MSToolkit")]
 [assembly: AssemblyDescription("Starts MSToolkit from its install folder")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+// AssemblyVersion, AssemblyFileVersion and AssemblyInformationalVersion come
+// from the VERSION file in the repo root: Build-All.ps1 generates them at
+// compile time. The installer reads the product version back from this EXE
+// and writes it to Apps & Features as DisplayVersion.
 
 namespace MSToolkitLauncher
 {

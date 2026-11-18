@@ -122,7 +122,7 @@ The installer asks no questions. Running it again later updates an existing inst
 | Program files | `C:\Program Files (x86)\MSToolkit` |
 | Logs and CSV reports | `C:\ProgramData\MSToolkit\Logs` - the only folder standard users can write to; nothing runs from it |
 | Desktop shortcut for all users | `C:\Users\Public\Desktop\MSToolkit.lnk` |
-| Apps & Features entry | **MSToolkit** (registry: `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSToolkit`) |
+| Apps & Features entry | **MSToolkit**, with its version as `DisplayVersion` (registry: `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSToolkit`) |
 
 ### If Windows warns about the file
 
@@ -186,25 +186,29 @@ Both commands run silently and switch to 64-bit PowerShell themselves, so no ext
 
 ### 4.5 Detection rule
 
+The installer writes the MSToolkit version (for example `1.1.0`) to its Apps &
+Features entry as **DisplayVersion**. Detect on that version, so a device with
+an older install - or one from before the version was recorded - is reported as
+not installed and Intune upgrades it.
+
 Choose **Manually configure detection rules** > **Add** and use this rule:
 
 | Field | Value |
 | --- | --- |
-| Rule type | **File** |
-| **Path** | `C:\Program Files (x86)\MSToolkit` |
-| **File or folder** | `MSToolkit.EXE` |
-| Detection method | **File or folder exists** |
-| Associated with a 32-bit app on 64-bit clients | **No** |
-
-Registry alternative (use one rule or the other, not both):
-
-| Field | Value |
-| --- | --- |
-| Rule type | Registry |
+| Rule type | **Registry** |
 | Key path | `HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\MSToolkit` |
-| Value name | *(leave empty)* |
-| Detection method | Key exists |
+| Value name | `DisplayVersion` |
+| Detection method | **Version comparison** |
+| Operator | **Equals** |
+| Value | the version of this package, for example `1.1.0` |
 | Associated with a 32-bit app on 64-bit clients | **No** |
+
+**When you publish a new version, change the Value to the new version.** The
+build prints the version in its summary, and it is in the `VERSION` file.
+
+A **File exists** rule on `C:\Program Files (x86)\MSToolkit\MSToolkit.EXE`, or a
+**Key exists** rule on the key above, also detects MSToolkit, but it cannot tell
+versions apart, so Intune would never upgrade an existing install.
 
 ### 4.6 Assign and monitor
 
