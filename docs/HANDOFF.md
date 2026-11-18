@@ -291,6 +291,12 @@ assigned at creation so there are no gaps.
   protected, since offboarding never removes one. Groups that can't be found are
   listed and skipped. During the undo it re-checks the SID and each group again.
   New records store each group's SID; older ones are resolved by DN.
+  Several records can be selected (Ctrl/Shift-click) and undone together
+  (`Invoke-OffboardUndoSelection`): every record is checked first, one
+  confirmation lists what will be undone and what was refused and why (nothing
+  but the refused list when all are refused), records are undone newest first
+  by `StartedUtc`, each on its own, and a summary lists undone / refused /
+  failed per record.
 - **Copy Checklist / Finish** - text record with `[x]` / `[ ]`, sub-steps, and
   `- Done` / `- DEFERRED, to be done later`.
 - `-WithDelegate` is opt-in per launch: the group tools don't accept `-Delegate`
