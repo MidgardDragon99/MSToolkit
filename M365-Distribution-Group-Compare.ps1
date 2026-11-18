@@ -2336,34 +2336,37 @@ Apply-MSToolkitSharedTheme -Root $MainForm
 
 Write-AppLog 'Distribution Group Compare initialized.'
 
-# Offboard User passes -AutoConnect and -ManageUser so this opens ready to work:
-# sign in, then straight into Manage User Groups with that user loaded.
-if ($AutoConnect -or $ManageUser) {
-    $MainForm.Add_Shown({
-        try {
-            if (-not ($script:ExchangeConnected)) {
-                Write-AppLog 'Connecting automatically...'
-                Connect-M365Exchange
-            }
-
-            if ($ManageUser -and ($script:ExchangeConnected)) {
-                Write-AppLog "Opening Manage User Groups for $ManageUser."
-                Show-DistributionGroupManager -PrefillUser $ManageUser
-            }
-            elseif ($ManageUser) {
-                Write-AppLog 'Not connected, so Manage User Groups was not opened. Connect, then open it yourself.' 'WARN'
-            }
-        }
-        catch {
-            Write-AppLog "Automatic start-up failed: $($_.Exception.Message)" 'ERROR'
-        }
-    })
-}
 Hide-PowerShellConsole
 # Type-ahead filtering on every editable dropdown. Its own handler, not folded
 # into another, so it runs on every launch rather than only when the tool is
 # started with parameters - and so a failure here cannot stop the rest of
 # start-up. Multiple Shown handlers chain.
 $MainForm.Add_Shown({ Register-MSToolkitComboFiltersOn -Root $MainForm })
+
+# Connect on open. Connect-ExchangeOnline signs in silently with the cached Windows
+# account when it can and prompts otherwise. Offboard User also passes -ManageUser,
+# so this then opens Manage User Groups with that user loaded. -AutoConnect is
+# still accepted but no longer needed. Registered at top level, with the
+# conditions inside, so it runs on every launch; registered last, after the rest
+# of start-up.
+$MainForm.Add_Shown({
+    try {
+        if (-not ($script:ExchangeConnected)) {
+            Write-AppLog 'Connecting automatically...'
+            Connect-M365Exchange
+        }
+
+        if ($ManageUser -and ($script:ExchangeConnected)) {
+            Write-AppLog "Opening Manage User Groups for $ManageUser."
+            Show-DistributionGroupManager -PrefillUser $ManageUser
+        }
+        elseif ($ManageUser) {
+            Write-AppLog 'Not connected, so Manage User Groups was not opened. Connect, then open it yourself.' 'WARN'
+        }
+    }
+    catch {
+        Write-AppLog "Automatic start-up failed: $($_.Exception.Message)" 'ERROR'
+    }
+})
 
 [void]$MainForm.ShowDialog()

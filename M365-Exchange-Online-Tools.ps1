@@ -2828,7 +2828,9 @@ function Invoke-ExoDelegationLoad {
         $script:DelegMailbox = $null
         $script:DelegFacts = $null
 
+        $Stage = 'mailbox'
         $Mailbox = Get-Mailbox -Identity $Identity -ErrorAction Stop
+        $Stage = 'permissions'
         $Smtp = [string]$Mailbox.PrimarySmtpAddress
         $Facts = Get-ExoMailboxFacts -Mailbox $Mailbox
 
@@ -2870,6 +2872,22 @@ function Invoke-ExoDelegationLoad {
         Set-BusyState -Busy $false -StatusText "Delegation read for $Smtp."
     }
     catch {
+        # Get-Mailbox reports a user without an Exchange Online mailbox as
+        # "couldn't be found on <server>", which reads like a typo or an outage.
+        # Say what it means instead.
+        $NotFound = ($Stage -eq 'mailbox') -and (
+            "$($_.CategoryInfo.Category)" -eq 'ObjectNotFound' -or
+            "$($_.Exception.Message)" -match "couldn't be found|could not be found|ManagementObjectNotFound")
+
+        if ($NotFound) {
+            $Text = "$Identity has no Exchange Online mailbox. The account is unlicensed, or its mailbox hasn't been provisioned yet."
+            Set-BusyState -Busy $false -StatusText 'No Exchange Online mailbox.'
+            $script:lblDelegSummary.Text = $Text
+            Show-ErrorMessage $Text
+            Write-AppLog $Text 'WARN'
+            return
+        }
+
         Set-BusyState -Busy $false -StatusText 'Delegation lookup failed.'
         Show-ErrorMessage "Could not read the mailbox delegation.`r`n`r`n$($_.Exception.Message)"
         Write-AppLog "Delegation lookup failed: $($_.Exception.Message)" 'ERROR'
@@ -3719,27 +3737,34 @@ $MainForm.Add_Shown({
 })
 
 Hide-PowerShellConsole
-# Opened by Offboard User for a mailbox handover: connect, select Delegation, fill
-# in the delegate and load the mailbox. Its own handler with the condition inside,
-# so it can never end up nested where it does not run.
-$MainForm.Add_Shown({
-    if (-not ($AutoConnect -or $ManageUser)) { return }
-
-    $Tabs.SelectedTab = $tabDeleg
-    if ($Delegate)   { $script:cboDelegUser.Text = $Delegate }
-    if ($ManageUser) { $script:cboDelegMailbox.Text = $ManageUser }
-
-    if ($AutoConnect) {
-        Connect-M365Exchange
-        if ($script:ExchangeConnected -and $ManageUser) { Invoke-ExoDelegationLoad }
-    }
-})
 
 # Type-ahead filtering on every editable dropdown. Its own handler, not folded
 # into another, so it runs on every launch rather than only when the tool is
 # started with parameters - and so a failure here cannot stop the rest of
 # start-up. Multiple Shown handlers chain.
 $MainForm.Add_Shown({ Register-MSToolkitComboFiltersOn -Root $MainForm })
+
+# Connect on open. Connect-ExchangeOnline signs in silently with the cached Windows
+# account when it can and prompts only when it can't. Opened by Offboard User for
+# a mailbox handover (-ManageUser / -Delegate): also select Delegation, fill in the
+# delegate and load the mailbox. -AutoConnect is still accepted but no longer
+# needed. Its own handler with the conditions inside, registered last so the rest
+# of start-up has run before sign-in.
+$MainForm.Add_Shown({
+    try {
+        if ($ManageUser -or $Delegate) {
+            $Tabs.SelectedTab = $tabDeleg
+            if ($Delegate)   { $script:cboDelegUser.Text = $Delegate }
+            if ($ManageUser) { $script:cboDelegMailbox.Text = $ManageUser }
+        }
+
+        if (-not $script:ExchangeConnected) { Connect-M365Exchange }
+        if ($script:ExchangeConnected -and $ManageUser) { Invoke-ExoDelegationLoad }
+    }
+    catch {
+        Write-AppLog "Automatic connect failed: $($_.Exception.Message)" 'ERROR'
+    }
+})
 
 [void]$MainForm.ShowDialog()
 
