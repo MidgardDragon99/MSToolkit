@@ -881,6 +881,87 @@ function Get-MSToolkitCriticalGroupReason {
     return $null
 }
 
+# Same rules as the console: matched on SID / RID and isCriticalSystemObject,
+# never on the name, so a renamed built-in account is still caught.
+function Get-MSToolkitCriticalUserReason {
+    param($User)
+
+    $Sid = Get-MSToolkitSidString -DirectoryObject $User
+    $Rid = Get-MSToolkitRidFromSid -Sid $Sid
+
+    switch ($Rid) {
+        500 { return "Built-in Administrator account (RID 500)" }
+        501 { return "Built-in Guest account (RID 501)" }
+        502 { return "KRBTGT account (RID 502)" }
+    }
+
+    if ($User.isCriticalSystemObject -eq $true) {
+        return "Active Directory marks this user as a critical system object"
+    }
+
+    return $null
+}
+
+# Stops an operation on a protected user: an OK-only Stop box and a BLOCKED
+# log line. Returns $true when the operation must not go ahead.
+function Stop-MSToolkitCriticalUserOperation {
+    param($User, [string]$Role, [string]$Operation)
+
+    $Reason = Get-MSToolkitCriticalUserReason -User $User
+    if ([string]::IsNullOrWhiteSpace($Reason)) { return $false }
+
+    [System.Windows.Forms.MessageBox]::Show(
+        "OPERATION BLOCKED`r`n`r`n$($User.DisplayName) ($($User.SamAccountName)) is protected by MSToolkit.`r`n`r`nRole: $Role`r`nRequested operation: $Operation`r`nReason: $Reason`r`n`r`nUse Active Directory Users and Computers if such a change is genuinely required.",
+        'Protected User Blocked',
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Stop
+    ) | Out-Null
+
+    Write-AppLog "BLOCKED: $Operation - $Role $($User.SamAccountName) - $Reason" 'ERROR'
+    return $true
+}
+
+# Add paths: protected groups are blocked outright, the same way Remove does -
+# an OK-only Stop box listing them, a BLOCKED log line each, and their rows
+# unticked. Returns the groups that may go on to the confirmation.
+function Split-MSToolkitBlockedAddGroups {
+    param(
+        [object[]]$Groups,
+        [string]$UserSam,
+        [System.Windows.Forms.DataGridView]$Grid,
+        [string]$SelectedColumn
+    )
+
+    $Blocked = @($Groups | Where-Object { $_.IsCritical })
+    $Allowed = @($Groups | Where-Object { -not $_.IsCritical })
+
+    if ($Blocked.Count -gt 0) {
+        $BlockedText = (@($Blocked | Sort-Object Name | ForEach-Object { "$($_.Name)  -  $($_.CriticalReason)" }) -join "`r`n - ")
+
+        [System.Windows.Forms.MessageBox]::Show(
+            "OPERATION BLOCKED for $($Blocked.Count) protected group(s). $UserSam cannot be added to these with this tool:`r`n`r`n - $BlockedText`r`n`r`nThey have been taken out of the selection. Use Active Directory Users and Computers if such a change is genuinely required.",
+            'Protected Groups Blocked',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Stop
+        ) | Out-Null
+
+        foreach ($GroupItem in $Blocked) {
+            Write-AppLog "BLOCKED: adding $UserSam to $($GroupItem.Name) - $($GroupItem.CriticalReason)" 'ERROR'
+        }
+
+        if ($Grid) {
+            foreach ($Row in $Grid.Rows) {
+                if (-not $Row.IsNewRow -and $Row.Tag -and $Row.Tag.IsCritical) {
+                    $Row.Cells[$SelectedColumn].Value = $false
+                }
+            }
+        }
+    }
+
+    # Callers wrap the result in @(), which gives a flat array (empty, one or many).
+    return $Allowed
+}
+
 function Get-MSToolkitUserPickerLabel {
     param($ADUser)
 
@@ -1404,7 +1485,9 @@ function Resolve-AdUser {
             'Title',
             'Department',
             'Manager',
-            'mail'
+            'mail',
+            'SID',
+            'isCriticalSystemObject'
         )
         ErrorAction = 'Stop'
     }
@@ -1472,7 +1555,9 @@ function Get-UserGroupsDetailed {
                 'mail',
                 'Description',
                 'ManagedBy',
-                'MemberOf'
+                'MemberOf',
+                'SID',
+                'isCriticalSystemObject'
             )
             ErrorAction = 'Stop'
         }
@@ -1482,6 +1567,7 @@ function Get-UserGroupsDetailed {
         }
 
         $props = Get-ADGroup @propsParams
+        $criticalReason = Get-MSToolkitCriticalGroupReason -Group $props
         $isHighRisk = $false
 
         foreach ($pattern in $script:HighRiskGroupPatterns) {
@@ -1502,6 +1588,8 @@ function Get-UserGroupsDetailed {
             ManagedBy         = $props.ManagedBy
             NestedInCount     = @($props.MemberOf).Count
             IsHighRisk        = $isHighRisk
+            IsCritical        = -not [string]::IsNullOrWhiteSpace($criticalReason)
+            CriticalReason    = $criticalReason
         })
     }
 
@@ -1516,6 +1604,9 @@ function Update-ComparisonGrid {
 
         if ($row.IsHighRisk) {
             $typeText = "$typeText - HIGH RISK"
+        }
+        if ($row.IsCritical) {
+            $typeText = "$typeText - PROTECTED"
         }
 
         $index = $script:dgvGroups.Rows.Add(
@@ -1551,17 +1642,34 @@ function Compare-Users {
 
         $script:dgvGroups.Rows.Clear()
         $script:ComparisonRows = @()
+        $script:ReferenceUser = $null
+        $script:TargetUser = $null
         $script:lblReferenceResolved.Text = ''
         $script:lblTargetResolved.Text = ''
         $script:lblMissingCount.Text = 'Missing groups: 0'
+        $script:btnAddSelected.Enabled = $false
 
+        # Both users are resolved and checked (SID / RID, isCriticalSystemObject)
+        # before any group is read or shown: the target because its membership
+        # would change, the reference because its groups would be copied.
         Write-AppLog "Resolving reference user: $($script:txtReference.Text)"
-        $script:ReferenceUser = Resolve-AdUser -Identity (ConvertFrom-MSToolkitUserPickerLabel -Value $script:txtReference.Text)
-        $script:lblReferenceResolved.Text = "$($script:ReferenceUser.DisplayName)  |  $($script:ReferenceUser.SamAccountName)"
+        $reference = Resolve-AdUser -Identity (ConvertFrom-MSToolkitUserPickerLabel -Value $script:txtReference.Text)
+        $script:lblReferenceResolved.Text = "$($reference.DisplayName)  |  $($reference.SamAccountName)"
+        if (Stop-MSToolkitCriticalUserOperation -User $reference -Role 'Reference user' -Operation 'Compare and copy group memberships') {
+            $script:lblStatus.Text = 'Comparison blocked: protected reference user.'
+            return
+        }
 
         Write-AppLog "Resolving target user: $($script:txtTarget.Text)"
-        $script:TargetUser = Resolve-AdUser -Identity (ConvertFrom-MSToolkitUserPickerLabel -Value $script:txtTarget.Text)
-        $script:lblTargetResolved.Text = "$($script:TargetUser.DisplayName)  |  $($script:TargetUser.SamAccountName)"
+        $target = Resolve-AdUser -Identity (ConvertFrom-MSToolkitUserPickerLabel -Value $script:txtTarget.Text)
+        $script:lblTargetResolved.Text = "$($target.DisplayName)  |  $($target.SamAccountName)"
+        if (Stop-MSToolkitCriticalUserOperation -User $target -Role 'Target user' -Operation 'Change group membership') {
+            $script:lblStatus.Text = 'Comparison blocked: protected target user.'
+            return
+        }
+
+        $script:ReferenceUser = $reference
+        $script:TargetUser = $target
 
         if ($script:ReferenceUser.DistinguishedName -eq $script:TargetUser.DistinguishedName) {
             throw 'The Reference User and Target User resolve to the same AD account.'
@@ -1645,6 +1753,13 @@ function Add-SelectedGroups {
         Show-InfoMessage 'Select at least one group to add.'
         return
     }
+
+    # Checked again here, before the confirmation, not only when compared.
+    if (Stop-MSToolkitCriticalUserOperation -User $script:TargetUser -Role 'Target user' -Operation 'Add group memberships') { return }
+    if ($script:ReferenceUser -and (Stop-MSToolkitCriticalUserOperation -User $script:ReferenceUser -Role 'Reference user' -Operation 'Copy group memberships')) { return }
+
+    $selected = @(Split-MSToolkitBlockedAddGroups -Groups $selected -UserSam $script:TargetUser.SamAccountName -Grid $script:dgvGroups -SelectedColumn 0)
+    if ($selected.Count -eq 0) { return }
 
     $highRisk = @($selected | Where-Object { $_.IsHighRisk })
 
@@ -1882,8 +1997,17 @@ function Show-ADGroupManager {
             $btnAdd.Enabled = $false
             [System.Windows.Forms.Application]::DoEvents()
 
-            $script:ManageADUser = Resolve-AdUser -Identity (ConvertFrom-MSToolkitUserPickerLabel -Value $txtUser.Text)
-            $lblResolved.Text = "$($script:ManageADUser.DisplayName)  |  $($script:ManageADUser.SamAccountName)"
+            $script:ManageADUser = $null
+            $btnRemove.Enabled = $false
+            $loadedUser = Resolve-AdUser -Identity (ConvertFrom-MSToolkitUserPickerLabel -Value $txtUser.Text)
+            $lblResolved.Text = "$($loadedUser.DisplayName)  |  $($loadedUser.SamAccountName)"
+
+            # Checked (SID / RID, isCriticalSystemObject) before any group is listed.
+            if (Stop-MSToolkitCriticalUserOperation -User $loadedUser -Role 'User' -Operation 'Manage group membership') {
+                $lblResolved.Text = "$($loadedUser.DisplayName)  |  $($loadedUser.SamAccountName)  -  BLOCKED (protected account)"
+                return
+            }
+            $script:ManageADUser = $loadedUser
 
             $userParams = @{
                 Identity = $script:ManageADUser.DistinguishedName
@@ -2008,6 +2132,11 @@ function Show-ADGroupManager {
             return
         }
 
+        if (Stop-MSToolkitCriticalUserOperation -User $script:ManageADUser -Role 'User' -Operation 'Add group memberships') { return }
+
+        $selectedGroups = @(Split-MSToolkitBlockedAddGroups -Groups $selectedGroups -UserSam $script:ManageADUser.SamAccountName -Grid $grid -SelectedColumn 'Selected')
+        if ($selectedGroups.Count -eq 0) { return }
+
         $highRisk = @($selectedGroups | Where-Object { $_.IsHighRisk })
         $names = @($selectedGroups | Sort-Object Name | ForEach-Object { $_.Name })
         $nameText = ($names -join "`r`n - ")
@@ -2094,6 +2223,8 @@ function Show-ADGroupManager {
             Show-InfoMessage 'Select at least one group the user is already a direct member of.'
             return
         }
+
+        if (Stop-MSToolkitCriticalUserOperation -User $script:ManageADUser -Role 'User' -Operation 'Remove group memberships') { return }
 
         # Critical groups are blocked outright and never silently dropped.
         $blocked = @($selectedGroups | Where-Object { $_.IsCritical })

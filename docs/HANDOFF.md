@@ -235,6 +235,13 @@ Parameters: `-Server`, `-ThemeMode`. Compares two users' direct AD group
 memberships and adds missing ones; Manage AD User Groups dialog adds/removes.
 Users from `OUUsers` + `OUAdmins`.
 
+- Critical users (SID / RID, `isCriticalSystemObject`) are blocked on every
+  path - Compare (reference and target), Compare -> Add, Manage -> Load, Add,
+  Remove - before any grid, picker or confirmation.
+- Critical groups are hard-blocked on both Add paths and on Remove: an OK-only
+  Stop box listing them, a BLOCKED log line each, and they leave the selection.
+  The name-pattern HIGH RISK flags stay warnings.
+
 ### Investigate-AccountLockout.ps1
 
 Parameter: `-ThemeMode`. Lockout investigation across DCs. Users from `OUUsers`
@@ -525,8 +532,6 @@ across all files. **All untested** (section 8).
 
 ### Deferred backlog - **don't start unless asked**
 
-- Compare-UserGroups: add a SID/RID hard block matching the console, keeping the
-  existing broader warnings.
 - NewADUser: block critical groups from mirroring and list them as blocked;
   optionally create-disabled -> configure -> verify -> enable.
 - M365-Group-Compare: hard-block add/remove on `isAssignableToRole` groups
