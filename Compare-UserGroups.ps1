@@ -1358,7 +1358,7 @@ function Initialize-MSToolkitUserPicker {
     )
 
     try {
-        $Users = Get-MSToolkitEmployeeUserList -Server $Server
+        $Users = @(Get-MSToolkitEmployeeUserList -Server $Server)
 
         foreach ($Combo in $Combos) {
             if (-not $Combo) { continue }

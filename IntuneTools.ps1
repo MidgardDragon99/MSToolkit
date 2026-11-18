@@ -2400,7 +2400,7 @@ function Show-InputDialog {
 
 function Set-AutopilotGroupTag {
     if (-not (Assert-Connected)) { return }
-    $ids = Get-SelectedCellValues -Grid $script:GridAutopilot -Column 'Id'
+    $ids = @(Get-SelectedCellValues -Grid $script:GridAutopilot -Column 'Id')
     if ($ids.Count -eq 0) { Show-InfoBox 'Select one or more Autopilot devices first.'; return }
 
     $current = ''
@@ -2433,7 +2433,7 @@ function Set-AutopilotGroupTag {
 
 function Set-AutopilotUser {
     if (-not (Assert-Connected)) { return }
-    $ids = Get-SelectedCellValues -Grid $script:GridAutopilot -Column 'Id'
+    $ids = @(Get-SelectedCellValues -Grid $script:GridAutopilot -Column 'Id')
     if ($ids.Count -ne 1) { Show-InfoBox 'Select exactly one Autopilot device.'; return }
 
     $upn = Show-InputDialog -Title 'Assign User' -Prompt 'User principal name (user@domain):'
@@ -2453,7 +2453,7 @@ function Set-AutopilotUser {
 
 function Clear-AutopilotUser {
     if (-not (Assert-Connected)) { return }
-    $ids = Get-SelectedCellValues -Grid $script:GridAutopilot -Column 'Id'
+    $ids = @(Get-SelectedCellValues -Grid $script:GridAutopilot -Column 'Id')
     if ($ids.Count -ne 1) { Show-InfoBox 'Select exactly one Autopilot device.'; return }
     $d = Get-CachedObject -CacheKey 'AutopilotRaw' -Id $ids[0]
     if (-not (Confirm-Action -Message "Remove assigned user from $($d.serialNumber)?" -Title 'Unassign User')) { return }
@@ -2471,7 +2471,7 @@ function Clear-AutopilotUser {
 
 function Remove-AutopilotDevices {
     if (-not (Assert-Connected)) { return }
-    $ids = Get-SelectedCellValues -Grid $script:GridAutopilot -Column 'Id'
+    $ids = @(Get-SelectedCellValues -Grid $script:GridAutopilot -Column 'Id')
     if ($ids.Count -eq 0) { Show-InfoBox 'Select one or more Autopilot devices first.'; return }
 
     $targets = foreach ($id in $ids) {
@@ -5479,7 +5479,7 @@ function Edit-AutopilotGroupMembership {
     param([bool]$Remove)
 
     if (-not (Assert-Connected)) { return }
-    $ids = Get-SelectedCellValues -Grid $script:GridAutopilot -Column 'Id'
+    $ids = @(Get-SelectedCellValues -Grid $script:GridAutopilot -Column 'Id')
     if ($ids.Count -eq 0) { Show-InfoBox 'Select one or more Autopilot devices first.'; return }
 
     Start-Busy 'Resolving Autopilot devices in Entra...'

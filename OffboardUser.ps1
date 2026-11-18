@@ -1365,7 +1365,7 @@ function Initialize-MSToolkitUserPicker {
     )
 
     try {
-        $Users = Get-MSToolkitEmployeeUserList -Server $Server
+        $Users = @(Get-MSToolkitEmployeeUserList -Server $Server)
 
         # The master list is kept so the box can be filtered as it is typed in.
         # Windows autocomplete is NOT used: it opens its own suggestion popup on
@@ -2364,7 +2364,7 @@ function Export-OffboardGroups {
         $User = Get-ADUser -Identity $script:CurrentUser.DistinguishedName -Server $script:WorkingServer `
             -Properties MemberOf -ErrorAction Stop
 
-        $Groups = Get-OffboardUserGroups -User $User
+        $Groups = @(Get-OffboardUserGroups -User $User)
 
         if ($Groups.Count -eq 0) {
             Write-AppLog "$($script:CurrentUser.SamAccountName) has no direct group memberships to export." 'WARNING'
@@ -2437,7 +2437,7 @@ function Remove-OffboardGroups {
         $User = Get-ADUser -Identity $script:CurrentUser.DistinguishedName -Server $script:WorkingServer `
             -Properties MemberOf -ErrorAction Stop
 
-        $Groups = Get-OffboardUserGroups -User $User
+        $Groups = @(Get-OffboardUserGroups -User $User)
         Set-BusyState -Busy $false
 
         if ($Groups.Count -eq 0) {
