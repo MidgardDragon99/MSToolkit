@@ -37,7 +37,7 @@ back to it, and changes from it only come in when re-done generically.
 | `M365-OneDrive-SharePoint-Tools.ps1` | OneDrive access, handover, restore, reports |
 | `M365-Teams-Block-Number.ps1` | Block and Forward Phone Numbers (Teams) |
 | `IntuneTools.ps1` | Intune / Entra devices, Autopilot, apps, policies, groups, reports |
-| `Launcher.ps1` | Starts `Launch-MSToolkit.bat` from the install folder |
+| `Launcher.ps1` | The old IExpress EXE's script. No longer used by `MSToolkit.EXE`, but still packaged (removing it needs the maintainer's OK) |
 | `Launch-*.bat`, `Launch-M365-Teams-Block-Number.cmd`, `Start-IntuneTools.bat` | Launchers. The AD ones use `runas` with the admin username exactly as typed. |
 | `InstallMSToolkit.ps1`, `install.cmd`, `install-config.txt` | Installer, its 64-bit PowerShell wrapper, 7-Zip SFX config |
 | `UninstallMSToolkit.ps1`, `uninstall.cmd`, `uninstall-config.txt` | Uninstaller (self-relocates to TEMP, elevates), wrapper, SFX config |
@@ -45,19 +45,19 @@ back to it, and changes from it only come in when re-done generically.
 | `MSToolkit.ico` | Icon for the EXE, the desktop shortcut and Apps & Features |
 | `README.md` | User and deployment documentation |
 | `docs/HANDOFF.md` | Design background and history |
-| `Build\` | **Planned:** `Build-All.ps1` / `.bat` and `Launchers\MSToolkitLauncher.cs` (section 3) |
+| `Build\Build-All.ps1`, `Build\Build-All.bat` | The one build command (section 3) |
+| `Build\Launchers\MSToolkitLauncher.cs` | Source of `MSToolkit.EXE`, the launcher the desktop shortcut points at |
 
 ## 3. Building
 
-**Today:** run `Build-Install-Uninstall-Only.cmd` from the repo root. It needs
-7-Zip at `C:\Program Files (x86)\7-Zip` (`7z.exe` and `7zSD.sfx`) and an existing
-`MSToolkit.EXE` (currently an IExpress package built by hand).
-
-**Planned - one command, `Build\Build-All.bat`** (passes arguments through to
+**One command: `Build\Build-All.bat`** (passes arguments through to
 `Build\Build-All.ps1`, PowerShell 5.1, and pauses at the end). Parameters
-`-SkipLauncher`, `-SkipIntuneWin`, `-IntuneWinAppUtil <path>`.
+`-SkipLauncher`, `-SkipIntuneWin`, `-IntuneWinAppUtil <path>`. Prerequisites:
+7-Zip at `C:\Program Files (x86)\7-Zip` (`7z.exe` and `7zSD.sfx`), the .NET
+Framework 4.x `csc.exe` that ships with Windows, and `IntuneWinAppUtil.exe` for
+step 3.
 
-1. **Launcher EXE.** Compile `Build\Launchers\MSToolkitLauncher.cs` with the
+1. **Launcher EXE.** Compiles `Build\Launchers\MSToolkitLauncher.cs` with the
    `csc.exe` that ships with Windows
    (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`, C# 5 only: no `$""`,
    `=>` members, `nameof` or `?.`):
@@ -66,17 +66,20 @@ back to it, and changes from it only come in when re-done generically.
    `Launcher.ps1` starts, uses the 64-bit system folder (`Sysnative` from a
    32-bit process), shows a message box and exits 1 if the target is missing,
    and carries neutral metadata (`AssemblyTitle`/`AssemblyProduct` "MSToolkit",
-   no company). It adds no username or domain. Fails the build if `csc` returns
-   non-zero or the EXE is missing.
+   no company). It adds no username or domain. It is compiled under its real
+   name in a temporary folder, then copied over; the build fails if `csc`
+   returns non-zero or the EXE is missing.
 2. **7-Zip SFX.** Runs `Build-Install-Uninstall-Only.cmd` unchanged with stdin
    redirected from an empty file (so its closing `pause` falls through) and
-   checks its exit code.
-3. **.intunewin.** Stages the package folder in `%TEMP%` (leaving out `*.7z`,
-   `*.intunewin`, the builder and `Logs`) and runs
+   checks its exit code and both EXEs. The builder can also be run on its own.
+3. **.intunewin.** Stages the package folder in `%TEMP%\MSToolkitBuild` (leaving
+   out `*.7z`, `*.intunewin`, `*.lnk`, logs, the builder, `IntuneWinAppUtil.exe`,
+   repository-only files and the `.git`, `Build`, `docs` and `Logs` folders) and
+   runs
    `IntuneWinAppUtil.exe -c <staging> -s install.cmd -o <repo root> -q`. The
    output is `install.intunewin`; the Intune app's install command depends on
    that name.
-4. **Summary** of OK / FAILED per step; exit 1 on any failure.
+4. **Summary** of OK / FAILED / SKIPPED per step; exit 1 on any failure.
 
 **IntuneWinAppUtil.exe** is Microsoft's tool and is never committed. Download it
 from Microsoft's `Microsoft-Win32-Content-Prep-Tool` repository on GitHub, and
@@ -217,10 +220,8 @@ There are no automated tests. After a change:
 
 ## 9. Open items
 
-- **Compiled launcher and `Build\Build-All`** (section 3) to replace the hand-built
-  IExpress `MSToolkit.EXE`.
-- **Neutral sample name** in the ComboBox prefix-matching comment in the eight
-  picker tools.
+- **`Launcher.ps1`** is no longer used by the compiled `MSToolkit.EXE`. Decide
+  whether to drop it from the package (installer, builder, README together).
 - Add `LICENSE` (MIT) before publishing.
 - Rebuild the installers and `.intunewin` from this repo after the changes above.
 - Code signing.
