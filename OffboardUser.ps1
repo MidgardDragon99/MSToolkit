@@ -3782,6 +3782,61 @@ function Get-OffboardUndoRunTime {
     return ([datetime]$Record.When).ToUniversalTime()
 }
 
+function Format-OffboardWrappedText {
+    # Wraps text to a column width for a monospaced box, with a hanging indent:
+    # a wrapped line continues under the start of its text - after a "1. " or
+    # "- " marker, or under the line's own leading spaces - so lists stay
+    # readable. A word longer than the line (a DN, a path) is broken after a
+    # comma where possible, otherwise at the edge.
+    param([string]$Text, [int]$Width)
+
+    if ($Width -lt 20) { $Width = 20 }
+    $Out = New-Object System.Text.StringBuilder
+
+    foreach ($Line in ($Text -split "`r?`n")) {
+        if ($Line.Length -le $Width) { [void]$Out.Append($Line).Append("`r`n"); continue }
+
+        $Lead = ([regex]::Match($Line, '^ *')).Value.Length
+        $Marker = [regex]::Match($Line, '^ *(\d+\.|-) +')
+        $Hang = if ($Marker.Success) { $Marker.Length } else { $Lead }
+        if ($Hang -gt [int]($Width / 2)) { $Hang = [int]($Width / 2) }
+
+        $First = $Line.Substring(0, $(if ($Marker.Success) { $Marker.Length } else { $Lead }))
+        $Words = @($Line.Substring($First.Length) -split ' ' | Where-Object { $_ -ne '' })
+        $Current = $First
+        $Empty = $true
+
+        foreach ($Word in $Words) {
+            $Piece = $Word
+            while ($Piece.Length -gt 0) {
+                $Room = $Width - $Current.Length - $(if ($Empty) { 0 } else { 1 })
+                if ($Piece.Length -le $Room) {
+                    $Current += $(if ($Empty) { '' } else { ' ' }) + $Piece
+                    $Empty = $false
+                    $Piece = ''
+                }
+                elseif (-not $Empty) {
+                    [void]$Out.Append($Current).Append("`r`n")
+                    $Current = ' ' * $Hang
+                    $Empty = $true
+                }
+                else {
+                    # The word alone is wider than the line: break it, after a
+                    # comma when there is one in reach.
+                    $Cut = $Piece.LastIndexOf(',', [Math]::Max(0, $Room - 1))
+                    if ($Cut -lt 1) { $Cut = $Room } else { $Cut++ }
+                    [void]$Out.Append($Current + $Piece.Substring(0, $Cut)).Append("`r`n")
+                    $Piece = $Piece.Substring($Cut)
+                    $Current = ' ' * $Hang
+                }
+            }
+        }
+        if (-not $Empty) { [void]$Out.Append($Current).Append("`r`n") }
+    }
+
+    return $Out.ToString().TrimEnd("`r", "`n")
+}
+
 function Show-OffboardUndoText {
     # A resizable, scrollable text dialog for lists too long for a message box.
     # -Confirm adds an Undo button; Cancel is the default either way, so Enter
@@ -3797,7 +3852,9 @@ function Show-OffboardUndoText {
     $Box = New-Object System.Windows.Forms.TextBox
     $Box.Multiline = $true
     $Box.ReadOnly = $true
-    $Box.ScrollBars = "Both"
+    # Wrapped by Format-OffboardWrappedText to the box's width (hanging indents),
+    # and re-wrapped when the window is resized - so no horizontal scrolling.
+    $Box.ScrollBars = "Vertical"
     $Box.WordWrap = $false
     $Box.Font = New-Object System.Drawing.Font("Consolas",9)
     $Box.Location = New-Object System.Drawing.Point(12,12)
@@ -3827,7 +3884,45 @@ function Show-OffboardUndoText {
         $Form.Controls.Add($Go)
     }
 
-    $Form.Add_Shown({ $Cancel.Focus() | Out-Null; $Box.SelectionLength = 0 })
+    # Re-wrap to the columns that fit the box now: its width less the scroll bar,
+    # divided by the width of one Consolas character. Everything the handlers
+    # need is held in $State and captured with GetNewClosure(), so they don't
+    # depend on which scope WinForms happens to run them in.
+    $State = @{
+        Box     = $Box
+        Cancel  = $Cancel
+        Raw     = $Text
+        Columns = -1
+        Ready   = $false
+        Wrap    = ${function:Format-OffboardWrappedText}
+    }
+    $Rewrap = {
+        # Resizes during the box's own creation are ignored: Windows puts the
+        # original text back once the box exists, which would undo a wrap made
+        # then. The Shown handler does the first wrap.
+        if (-not $State.Ready) { return }
+        $B = $State.Box
+        $CharWidth = [System.Windows.Forms.TextRenderer]::MeasureText('MMMMMMMMMM', $B.Font, [System.Drawing.Size]::Empty,
+            [System.Windows.Forms.TextFormatFlags]::NoPadding).Width / 10.0
+        $Usable = $B.ClientSize.Width - [System.Windows.Forms.SystemInformation]::VerticalScrollBarWidth - 6
+        $Columns = [int][Math]::Floor($Usable / $CharWidth)
+        if ($Columns -gt 0 -and $Columns -ne $State.Columns) {
+            $State.Columns = $Columns
+            $B.Text = & $State.Wrap -Text $State.Raw -Width $Columns
+            $B.SelectionStart = 0
+            $B.SelectionLength = 0
+        }
+    }.GetNewClosure()
+    $State.Rewrap = $Rewrap
+    $Box.Add_SizeChanged($Rewrap)
+
+    $Form.Add_Shown({
+        $State.Ready = $true
+        $State.Columns = -1
+        & $State.Rewrap
+        $State.Cancel.Focus() | Out-Null
+        $State.Box.SelectionLength = 0
+    }.GetNewClosure())
     Apply-MSToolkitSharedTheme -Root $Form
     $Result = $Form.ShowDialog()
     $Form.Dispose()
