@@ -56,7 +56,7 @@ Everything below is installed to `C:\Program Files (x86)\MSToolkit`, and MSToolk
 | `M365-OneDrive-SharePoint-Tools.ps1` | OneDrive access, offboarding handover, deleted OneDrive restore and storage/sharing reports |
 | `M365-Teams-Block-Number.ps1` / `Launch-M365-Teams-Block-Number.cmd` | Block and Forward Phone Numbers: Teams inbound number blocking and user call forwarding, and its standalone launcher |
 | `IntuneTools.ps1` | Intune and Entra device, app and policy management |
-| `Launcher.ps1` | The small script inside `MSToolkit.EXE` that starts `Launch-MSToolkit.bat` |
+| `Launcher.ps1` | Starts `Launch-MSToolkit.bat` from the install folder. Kept from earlier versions; `MSToolkit.EXE` no longer uses it. |
 | `MSToolkit.ico` / `MSToolkit.lnk` | Icon and shortcut |
 | `InstallMSToolkit.ps1` / `Launch-InstallMSToolkit.bat` | Copies of the installer script and its launcher. Not used day to day; to reinstall or repair, run `MSToolkit-Install.exe` again. |
 | `UninstallMSToolkit.ps1` / `Launch-UninstallMSToolkit.bat` | The uninstaller script used by the Apps & Features entry; the `.bat` runs it directly |

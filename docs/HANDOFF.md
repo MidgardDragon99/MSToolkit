@@ -374,10 +374,11 @@ Reports, Settings. Signs in with the tenant's own app registration, delegated
   and adds an Apps & Features entry.
 - `UninstallMSToolkit.ps1` self-relocates to TEMP, elevates, removes everything,
   removes the Apps & Features entry last.
-- `MSToolkit.EXE` (IExpress) contains **only `Launcher.ps1`**; install program
-  `powershell.exe -NoProfile -ExecutionPolicy Bypass -File Launcher.ps1`.
-  `Launcher.ps1` runs `Launch-MSToolkit.bat` from the install folder. Rebuild the
-  EXE only when `Launcher.ps1` changes.
+- `MSToolkit.EXE` is compiled by `Build\Build-All.ps1` from
+  `Build\Launchers\MSToolkitLauncher.cs` and embeds nothing: it runs
+  `Launch-MSToolkit.bat` from its own folder in a visible console. It replaced
+  an IExpress EXE that embedded `Launcher.ps1` and so ran a stale copy after
+  every update. `Launcher.ps1` is still packaged but no longer used.
 - `Build-Install-Uninstall-Only.cmd` builds `MSToolkit-Install.exe` /
   `MSToolkit-Uninstall.exe` (7-Zip SFX, running `install.cmd` / `uninstall.cmd`).
   Its validation and archive lists must match the installer's `$PayloadFiles`.
