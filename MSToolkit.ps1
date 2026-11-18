@@ -4184,7 +4184,7 @@ function Remove-UserFromGroup {
         $User = Get-ADUser `
             -Identity $Sam `
             -Server $Server `
-            -Properties MemberOf,SID,DisplayName `
+            -Properties MemberOf,SID,isCriticalSystemObject,DisplayName `
             -ErrorAction Stop
 
         $CriticalUserReason = Get-MSToolkitCriticalUserReason -User $User
