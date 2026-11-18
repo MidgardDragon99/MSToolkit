@@ -52,6 +52,7 @@ try {
 [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+[DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 '@ -ErrorAction Stop
     }
     $script:NativeWindowHelper = $true
@@ -98,6 +99,27 @@ $script:Cache = @{}      # grid name -> hashtable of id -> raw object
 
 if (-not (Test-Path $script:AppDir)) {
     New-Item -Path $script:AppDir -ItemType Directory -Force | Out-Null
+}
+
+# Activity log: sign-in, token cache and window steps, one line each, so a
+# sign-in problem can be traced afterwards. The installer's shared Logs folder,
+# the only place MSToolkit tools write; TEMP if that can't be used. Never
+# contains a token.
+$script:LogDir = Join-Path $env:ProgramData 'MSToolkit\Logs'
+try {
+    if (-not (Test-Path -LiteralPath $script:LogDir)) { New-Item -Path $script:LogDir -ItemType Directory -Force | Out-Null }
+} catch {
+    $script:LogDir = Join-Path $env:TEMP 'MSToolkit-IntuneTools'
+    try { if (-not (Test-Path -LiteralPath $script:LogDir)) { New-Item -Path $script:LogDir -ItemType Directory -Force | Out-Null } } catch { }
+}
+$script:LogFile = Join-Path $script:LogDir ('IntuneTools_{0}.log' -f (Get-Date -Format 'yyyyMMdd'))
+
+function Write-ActivityLog {
+    param([string]$Text)
+    try {
+        $line = '[{0}] [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $env:USERNAME, $Text
+        Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8 -ErrorAction Stop
+    } catch { }
 }
 
 # ---------------------------------------------------------------------------
@@ -176,20 +198,32 @@ function Save-RefreshToken {
     if ([string]::IsNullOrWhiteSpace($RefreshToken)) { return }
     try {
         $sec = ConvertTo-SecureString -String $RefreshToken -AsPlainText -Force
-        ConvertFrom-SecureString -SecureString $sec |
-            Set-Content -Path $script:TokenPath -Encoding UTF8
-    } catch { }
+        # No trailing newline: ConvertTo-SecureString can't read the DPAPI string
+        # back with one on the end.
+        Set-Content -Path $script:TokenPath -Value (ConvertFrom-SecureString -SecureString $sec) `
+            -Encoding ASCII -NoNewline -ErrorAction Stop
+    } catch {
+        Write-ActivityLog "Token cache: could not save the refresh token to $($script:TokenPath): $($_.Exception.Message)"
+    }
 }
 
 function Get-RefreshToken {
-    if (-not (Test-Path $script:TokenPath)) { return $null }
+    if (-not (Test-Path $script:TokenPath)) {
+        Write-ActivityLog "Token cache: no cached refresh token at $($script:TokenPath)."
+        return $null
+    }
     try {
-        $enc = Get-Content -Path $script:TokenPath -Raw
-        $sec = ConvertTo-SecureString -String $enc
+        # Trim: files saved by earlier versions end in a newline, which made
+        # ConvertTo-SecureString fail, so the silent refresh never had a token.
+        $enc = (Get-Content -Path $script:TokenPath -Raw -ErrorAction Stop).Trim()
+        $sec = ConvertTo-SecureString -String $enc -ErrorAction Stop
         $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
         try   { return [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
         finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-    } catch { return $null }
+    } catch {
+        Write-ActivityLog "Token cache: could not read the cached refresh token: $($_.Exception.Message)"
+        return $null
+    }
 }
 
 function Clear-TokenCache {
@@ -240,9 +274,23 @@ function Invoke-TokenRefresh {
         $resp = Invoke-RestMethod -Method POST -Uri (Get-TokenEndpoint) -Body $body `
                     -ContentType 'application/x-www-form-urlencoded' -ErrorAction Stop
         Set-TokenFromResponse -Response $resp
+        Write-ActivityLog "Token cache: silent refresh succeeded ($($script:Account))."
         return $true
     } catch {
-        Clear-TokenCache
+        # Only throw the cached token away when Entra says it is no good (expired,
+        # revoked, or a sign-in is now required). A network or service error keeps
+        # it, so the next attempt can still be silent.
+        $code = $null
+        try { $code = (Get-GraphErrorObject $_).error } catch { }
+        if ($code -in @('invalid_grant', 'interaction_required', 'invalid_client', 'unauthorized_client')) {
+            Write-ActivityLog "Token cache: silent refresh rejected ($code) - cached token cleared, sign-in needed."
+            Clear-TokenCache
+        } else {
+            $why = if ($code -and $code -ne 'unknown') { $code } else { $_.Exception.Message }
+            Write-ActivityLog "Token cache: silent refresh failed ($why) - cached token kept."
+            $script:AccessToken = $null
+            $script:TokenExpiry = [datetime]::MinValue
+        }
         return $false
     }
 }
@@ -482,24 +530,20 @@ function Start-BrowserSignIn {
 
         $bodyHtml = if ($code) {
             @'
-<html><head><title>Signed in</title></head>
+<html><head><title>Signed in - you can close this tab</title></head>
 <body style="font-family:Segoe UI;padding:40px;color:#202020">
-<h2 id="h">Signed in</h2>
-<p id="p">IntuneTools has the sign-in. Returning to the app...</p>
+<h2>Signed in to IntuneTools</h2>
+<p>You can close this tab and go back to IntuneTools.</p>
 <script>
 // Browsers only allow a script to close a window that a script opened. This
-// tab was opened by the OS, so these attempts are usually refused - the page
-// tidies itself up instead.
+// tab was opened by the OS, so these attempts are usually refused - the text
+// above already tells the user to close it.
 function bye() {
   try { window.close(); } catch (e) {}
   try { window.open('', '_self'); window.close(); } catch (e) {}
 }
 bye();
 setTimeout(bye, 400);
-setTimeout(function () {
-  document.getElementById('h').textContent = 'Signed in';
-  document.getElementById('p').textContent = 'You can close this tab.';
-}, 1500);
 </script>
 </body></html>
 '@
@@ -511,8 +555,12 @@ setTimeout(function () {
         $ctx.Response.ContentLength64 = $buf.Length
         $ctx.Response.OutputStream.Write($buf, 0, $buf.Length)
         $ctx.Response.OutputStream.Close()
+        Write-ActivityLog "Browser sign-in: reply received ($(if ($code) { 'code' } else { 'error: ' + $err }))."
 
         $wait.Close(); $wait.Dispose()
+        # Raise only once the listener has answered and the browser has drawn the
+        # reply page; raising while the browser is still busy loses the race.
+        Wait-UiDelay -Milliseconds 300
         Show-MainWindow
 
         if ($err) {
@@ -565,6 +613,7 @@ function Connect-IntuneGraph {
     if (-not $ForceAccountPicker) {
         if (Invoke-TokenRefresh) { return $true }
     }
+    Write-ActivityLog "Connect: starting $(if ($script:Config.SignInMethod -eq 'Device code') { 'device code' } else { 'browser' }) sign-in$(if ($ForceAccountPicker) { ' (account picker)' })."
 
     if ($script:Config.SignInMethod -eq 'Device code') {
         return (Start-DeviceCodeSignIn)
@@ -936,39 +985,69 @@ function Set-AppTheme {
     Set-ConnectedState $script:IsConnected
 }
 
+# Keeps the UI responsive for a short pause on the UI thread.
+function Wait-UiDelay {
+    param([int]$Milliseconds = 300)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $Milliseconds) {
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 15
+    }
+}
+
+function Test-MainWindowInFront {
+    if (-not $script:NativeWindowHelper) { return $false }
+    try { return ([IntuneTools.Native]::GetForegroundWindow() -eq $script:MainForm.Handle) } catch { return $false }
+}
+
+# Which process owns the foreground window - for the log only.
+function Get-ForegroundOwnerText {
+    if (-not $script:NativeWindowHelper) { return 'unknown' }
+    try {
+        $fg = [IntuneTools.Native]::GetForegroundWindow()
+        if ($fg -eq [IntPtr]::Zero) { return 'no foreground window' }
+        $fgPid = [uint32]0
+        [void][IntuneTools.Native]::GetWindowThreadProcessId($fg, [ref]$fgPid)
+        return (Get-Process -Id $fgPid -ErrorAction Stop).ProcessName
+    } catch { return 'unknown' }
+}
+
 function Show-MainWindow {
-    # Called after the browser has had focus during sign-in. Windows blocks a
-    # plain Activate() from stealing foreground, so this uses the TopMost
-    # toggle, then attaches to the foreground window's input thread for
-    # BringWindowToTop / SetForegroundWindow, and falls back quietly if any of
-    # it fails.
+    # Called on the UI thread after the browser has had focus during sign-in.
+    # Windows only lets a process take the foreground in limited cases, so this
+    # escalates until the window is actually in front, and logs which step
+    # worked:
+    #   1. attach to the foreground window's input thread, BringWindowToTop and
+    #      SetForegroundWindow, detach;
+    #   2. a synthetic Alt key press (which lifts the foreground lock), then
+    #      SetForegroundWindow again;
+    #   3. TopMost on -> Activate() -> TopMost off.
+    # A minimised window is restored first. Nothing here throws.
     if (-not $script:MainForm -or $script:MainForm.IsDisposed) { return }
     try {
-        $minimized = ($script:MainForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized)
+        $handle = $script:MainForm.Handle
 
-        if ($minimized) {
+        if ($script:MainForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized) {
             # SW_RESTORE un-minimises. It must ONLY be used on a minimised
             # window: on a maximised one it restores to the smaller previous
             # size, which looks like the app deliberately shrinking itself.
-            if ($script:NativeWindowHelper -and $script:MainForm.Handle -ne [IntPtr]::Zero) {
-                [IntuneTools.Native]::ShowWindow($script:MainForm.Handle, 9) | Out-Null   # SW_RESTORE
+            if ($script:NativeWindowHelper -and $handle -ne [IntPtr]::Zero) {
+                [IntuneTools.Native]::ShowWindow($handle, 9) | Out-Null   # SW_RESTORE
             }
             $target = $script:LastWindowState
             if (-not $target) { $target = [System.Windows.Forms.FormWindowState]::Maximized }
             $script:MainForm.WindowState = $target
+            [System.Windows.Forms.Application]::DoEvents()
         }
 
-        $wasTopMost = $script:MainForm.TopMost
-        $script:MainForm.TopMost = $true
-        $script:MainForm.Activate()
-        $script:MainForm.BringToFront()
-        [System.Windows.Forms.Application]::DoEvents()
-        $script:MainForm.TopMost = $wasTopMost
+        if (Test-MainWindowInFront) {
+            Write-ActivityLog 'Window: already in front after sign-in.'
+            $script:MainForm.Focus() | Out-Null
+            return
+        }
 
-        # bring to the foreground without touching the size. Windows only lets the
-        # thread that owns the foreground window hand it over, so attach to that
-        # thread's input first and always detach again afterwards.
-        if ($script:NativeWindowHelper -and $script:MainForm.Handle -ne [IntPtr]::Zero) {
+        if ($script:NativeWindowHelper -and $handle -ne [IntPtr]::Zero) {
+            # Step 1 - attach to the foreground thread's input, raise, always detach.
             $thisThread = [IntuneTools.Native]::GetCurrentThreadId()
             $fgThread   = [uint32]0
             $attached   = $false
@@ -981,18 +1060,59 @@ function Show-MainWindow {
                 if ($fgThread -ne 0 -and $fgThread -ne $thisThread) {
                     $attached = [IntuneTools.Native]::AttachThreadInput($thisThread, $fgThread, $true)
                 }
-                [IntuneTools.Native]::BringWindowToTop($script:MainForm.Handle) | Out-Null
-                [IntuneTools.Native]::SetForegroundWindow($script:MainForm.Handle) | Out-Null
+                [IntuneTools.Native]::BringWindowToTop($handle) | Out-Null
+                [IntuneTools.Native]::SetForegroundWindow($handle) | Out-Null
+            } catch {
+                Write-ActivityLog "Window: step 1 error: $($_.Exception.Message)"
             } finally {
                 if ($attached) {
                     [IntuneTools.Native]::AttachThreadInput($thisThread, $fgThread, $false) | Out-Null
                 }
             }
+            [System.Windows.Forms.Application]::DoEvents()
+            if (Test-MainWindowInFront) {
+                Write-ActivityLog "Window: brought to front by step 1 (AttachThreadInput + SetForegroundWindow; attached: $attached)."
+                $script:MainForm.Focus() | Out-Null
+                return
+            }
+
+            # Step 2 - a synthetic Alt down/up counts as user input, which lifts
+            # Windows' foreground lock for the next SetForegroundWindow.
+            try {
+                [IntuneTools.Native]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)   # VK_MENU down
+                [IntuneTools.Native]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)   # VK_MENU up (KEYEVENTF_KEYUP)
+                [IntuneTools.Native]::SetForegroundWindow($handle) | Out-Null
+            } catch {
+                Write-ActivityLog "Window: step 2 error: $($_.Exception.Message)"
+            }
+            [System.Windows.Forms.Application]::DoEvents()
+            if (Test-MainWindowInFront) {
+                Write-ActivityLog 'Window: brought to front by step 2 (Alt key + SetForegroundWindow).'
+                $script:MainForm.Focus() | Out-Null
+                return
+            }
         }
 
+        # Step 3 - TopMost toggle with Activate().
+        $wasTopMost = $script:MainForm.TopMost
+        $script:MainForm.TopMost = $true
+        $script:MainForm.Activate()
+        $script:MainForm.BringToFront()
+        [System.Windows.Forms.Application]::DoEvents()
+        $script:MainForm.TopMost = $wasTopMost
         $script:MainForm.Focus() | Out-Null
         [System.Windows.Forms.Application]::DoEvents()
-    } catch { }
+
+        if (Test-MainWindowInFront) {
+            Write-ActivityLog 'Window: brought to front by step 3 (TopMost + Activate).'
+        } elseif (-not $script:NativeWindowHelper) {
+            Write-ActivityLog 'Window: native helpers unavailable; tried step 3 (TopMost + Activate) only.'
+        } else {
+            Write-ActivityLog "Window: still not in front after all three steps; the foreground window belongs to $(Get-ForegroundOwnerText)."
+        }
+    } catch {
+        Write-ActivityLog "Window: raise failed: $($_.Exception.Message)"
+    }
 }
 
 function Set-Status {
@@ -1456,6 +1576,7 @@ $script:BtnConnect.Add_Click({
 })
 
 $script:BtnSignOut.Add_Click({
+    Write-ActivityLog 'Sign Out: cached token cleared by the user.'
     Clear-TokenCache
     Set-ConnectedState $false
     Set-Status 'Signed out'

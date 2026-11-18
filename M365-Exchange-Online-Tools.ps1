@@ -2828,7 +2828,9 @@ function Invoke-ExoDelegationLoad {
         $script:DelegMailbox = $null
         $script:DelegFacts = $null
 
+        $Stage = 'mailbox'
         $Mailbox = Get-Mailbox -Identity $Identity -ErrorAction Stop
+        $Stage = 'permissions'
         $Smtp = [string]$Mailbox.PrimarySmtpAddress
         $Facts = Get-ExoMailboxFacts -Mailbox $Mailbox
 
@@ -2870,6 +2872,22 @@ function Invoke-ExoDelegationLoad {
         Set-BusyState -Busy $false -StatusText "Delegation read for $Smtp."
     }
     catch {
+        # Get-Mailbox reports a user without an Exchange Online mailbox as
+        # "couldn't be found on <server>", which reads like a typo or an outage.
+        # Say what it means instead.
+        $NotFound = ($Stage -eq 'mailbox') -and (
+            "$($_.CategoryInfo.Category)" -eq 'ObjectNotFound' -or
+            "$($_.Exception.Message)" -match "couldn't be found|could not be found|ManagementObjectNotFound")
+
+        if ($NotFound) {
+            $Text = "$Identity has no Exchange Online mailbox. The account is unlicensed, or its mailbox hasn't been provisioned yet."
+            Set-BusyState -Busy $false -StatusText 'No Exchange Online mailbox.'
+            $script:lblDelegSummary.Text = $Text
+            Show-ErrorMessage $Text
+            Write-AppLog $Text 'WARN'
+            return
+        }
+
         Set-BusyState -Busy $false -StatusText 'Delegation lookup failed.'
         Show-ErrorMessage "Could not read the mailbox delegation.`r`n`r`n$($_.Exception.Message)"
         Write-AppLog "Delegation lookup failed: $($_.Exception.Message)" 'ERROR'
