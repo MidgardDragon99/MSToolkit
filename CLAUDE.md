@@ -44,6 +44,7 @@ back to it, and changes from it only come in when re-done generically.
 | `Build-Install-Uninstall-Only.cmd` | Builds `MSToolkit-Install.exe` / `MSToolkit-Uninstall.exe` (7-Zip SFX) |
 | `MSToolkit.ico` | Icon for the EXE, the desktop shortcut and Apps & Features |
 | `README.md` | User and deployment documentation |
+| `LICENSE` | MIT licence |
 | `docs/HANDOFF.md` | Design background and history |
 | `Build\Build-All.ps1`, `Build\Build-All.bat` | The one build command (section 3) |
 | `Build\Launchers\MSToolkitLauncher.cs` | Source of `MSToolkit.EXE`, the launcher the desktop shortcut points at |
@@ -222,7 +223,6 @@ There are no automated tests. After a change:
 
 - **`Launcher.ps1`** is no longer used by the compiled `MSToolkit.EXE`. Decide
   whether to drop it from the package (installer, builder, README together).
-- Add `LICENSE` (MIT) before publishing.
 - Rebuild the installers and `.intunewin` from this repo after the changes above.
 - Code signing.
 - Test on a clean PC with no previous install, and an Intune upgrade from an old
