@@ -187,8 +187,6 @@ The main branch is `main`. **There is no remote yet.** The `git pull` and
 
 **Builds and hand-over (standing rule)**
 
-The maintainer only runs the installers. So:
-
 - **Whenever handing over a test-batch or a test list, build first.** Run
   `Build\Build-All.bat` on exactly what is to be tested, show the summary table
   (OK / FAILED / SKIPPED per step), and say which package to run - normally
@@ -197,6 +195,30 @@ The maintainer only runs the installers. So:
   table, and say which installer to run, before handing over the push command.
 - Parse-check every script before building. Never hand over a test list for a
   build that failed.
+
+**Installing and uninstalling test builds on the maintainer's PC (standing rule)**
+
+- **Ask in the chat first**, naming the exact installer or uninstaller (full
+  path). A yes covers that one run.
+- After the yes, start it elevated and wait for it, one at a time:
+  `$p = Start-Process -FilePath '<full path to the .exe>' -Verb RunAs -Wait -PassThru`.
+  The maintainer answers the UAC prompt (or enters admin credentials).
+- Report `$p.ExitCode`, then verify:
+  - **Install:** the HKLM version marker (if the package writes one), the
+    install folder `%ProgramFiles(x86)%\MSToolkit` with `MSToolkit.EXE`, and the
+    all-users desktop shortcut `%PUBLIC%\Desktop\MSToolkit.lnk`.
+  - **Uninstall:** all of those are gone, plus `C:\ProgramData\MSToolkit` and
+    the Apps & Features entry.
+- **If UAC is cancelled or the exit code isn't 0, stop and tell the
+  maintainer.** Don't retry or work around it.
+- Only installers and uninstallers built from this repo by `Build\Build-All`
+  (`MSToolkit-Install.exe`, `MSToolkit-Uninstall.exe` in the repo root). Never
+  anything downloaded, and never run Claude Code itself elevated.
+
+**Local test helpers**
+
+Scripts that only make sense on the maintainer's network (test records, test
+accounts, real names) go in `local\`, which is git-ignored and never committed.
 
 **Rolling back**
 
