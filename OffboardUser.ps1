@@ -3496,19 +3496,20 @@ function Get-OffboardUndoRecords {
     return $Records.ToArray()
 }
 
-function Stop-OffboardUndo {
-    # One place for every refusal: an error box saying nothing was changed, and
-    # an ERROR line in the Activity log.
+function New-OffboardUndoRefusal {
+    # One place for every refusal: an ERROR line in the Activity log, and the
+    # reason handed back to the caller, which lists it. No box is shown here, so
+    # several records can all be checked before anything is put on screen.
     param([string]$Message, [string]$LogText)
-    Show-ErrorMessage "$Message`r`n`r`nNothing was restored."
     Write-AppLog "Undo refused - $LogText" 'ERROR'
+    return [pscustomobject]@{ Refused = $true; Reason = $Message }
 }
 
 function Get-OffboardUndoPreflight {
     # Every check that can refuse an undo, run BEFORE the confirmation so a bad
-    # record is stopped before anyone is asked to approve it. Returns $null when
-    # the record is refused (the reason has already been shown), otherwise what
-    # the undo and the confirmation need:
+    # record is stopped before anyone is asked to approve it. Always returns an
+    # object: Refused = $true with a Reason, or Refused = $false with what the
+    # undo and the confirmation need:
     #   Account   - the account, resolved by SID (never by DN)
     #   Moved     - $true when its DN is not the one in the record
     #   GroupDns  - record DN -> current DN for every group that was found
@@ -3522,9 +3523,8 @@ function Get-OffboardUndoPreflight {
 
     # 1. A record without a SID cannot be tied to one account for certain.
     if ([string]::IsNullOrWhiteSpace($Sid)) {
-        Stop-OffboardUndo ("This record has no SID for $Who, so the account cannot be identified for certain.`r`n`r`n" +
-            "Undo it by hand in Active Directory Users and Computers.") "record has no SID: $Who"
-        return $null
+        return (New-OffboardUndoRefusal ("This record has no SID, so the account cannot be identified for certain. " +
+            "Undo it by hand in Active Directory Users and Computers.") "record has no SID: $Who")
     }
 
     # 2. Find the account by SID, wherever it is now.
@@ -3533,16 +3533,14 @@ function Get-OffboardUndoPreflight {
             -Properties SID,isCriticalSystemObject,Enabled,DisplayName,SamAccountName,DistinguishedName,telephoneNumber,mobile,MemberOf -ErrorAction Stop
     }
     catch {
-        Stop-OffboardUndo ("No account with this record's SID could be found on $($Server).`r`n`r`n$Who`r`nSID: $Sid`r`n`r`n" +
-            "It may have been deleted. Undo by hand if it still exists.`r`n`r`n$($_.Exception.Message)") "account not found by SID $Sid ($Who)"
-        return $null
+        return (New-OffboardUndoRefusal ("No account with this record's SID ($Sid) could be found on $($Server). " +
+            "It may have been deleted. Undo by hand if it still exists. ($($_.Exception.Message))") "account not found by SID $Sid ($Who)")
     }
 
     # 3. Never restore anything for a protected account.
     $Critical = Get-MSToolkitCriticalUserReason -User $Account
     if ($Critical) {
-        Stop-OffboardUndo ("OPERATION BLOCKED`r`n`r`n$($Account.DisplayName) ($($Account.SamAccountName)) is a protected account.`r`nReason: $Critical") "protected account $($Account.SamAccountName) - $Critical"
-        return $null
+        return (New-OffboardUndoRefusal "OPERATION BLOCKED - $($Account.DisplayName) ($($Account.SamAccountName)) is a protected account: $Critical" "protected account $($Account.SamAccountName) - $Critical")
     }
 
     # 4. Resolve every group in the record. Offboarding never removes protected
@@ -3574,12 +3572,13 @@ function Get-OffboardUndoPreflight {
     }
 
     if ($Protected.Count -gt 0) {
-        Stop-OffboardUndo ("OPERATION BLOCKED`r`n`r`nThis record names protected group(s):`r`n`r`n - $(($Protected.ToArray()) -join "`r`n - ")`r`n`r`n" +
-            "Offboarding never removes protected groups, so this record was not written by this tool and will not be used.") "record names protected group(s): $(($Protected.ToArray()) -join '; ')"
-        return $null
+        return (New-OffboardUndoRefusal ("OPERATION BLOCKED - the record names protected group(s): $(($Protected.ToArray()) -join '; '). " +
+            "Offboarding never removes protected groups, so this record was not written by this tool and will not be used.") "record names protected group(s): $(($Protected.ToArray()) -join '; ')")
     }
 
     return [pscustomobject]@{
+        Refused  = $false
+        Reason   = $null
         Account  = $Account
         Moved    = ([string]$Account.DistinguishedName -ne $RecordDn)
         RecordDn = $RecordDn
@@ -3593,17 +3592,24 @@ function Invoke-OffboardUndoRecord {
     # phone numbers, then the account itself - so the account is only re-enabled
     # once its access is back. The record has already passed
     # Get-OffboardUndoPreflight; the account is used at its CURRENT DN.
+    # Shows nothing itself; returns Status (Undone / Refused), Restored, Failed
+    # and Reason, for the caller's summary.
     param($Record, [string]$Path, $Preflight)
 
     $Server = $script:WorkingServer
     $Account = $Preflight.Account
     $Dn = [string]$Account.DistinguishedName
 
+    # Never act on an empty identity: every change below targets $Dn.
+    if ([string]::IsNullOrWhiteSpace($Dn)) {
+        $Refusal = New-OffboardUndoRefusal "The account's current location could not be read, so nothing was changed." "no DN for $($Record.User.SamAccountName)"
+        return [pscustomobject]@{ Status = 'Refused'; Restored = 0; Failed = 0; Reason = $Refusal.Reason }
+    }
+
     # Second line of defence: the account must still carry the record's SID.
     if ([string]$Account.SID.Value -ne [string]$Record.User.Sid) {
-        Stop-OffboardUndo ("This record does not match the account now at:`r`n$Dn`r`n`r`n" +
-            "Record SID: $($Record.User.Sid)`r`nAccount SID: $($Account.SID.Value)") "SID mismatch for $Dn"
-        return
+        $Refusal = New-OffboardUndoRefusal "The account now at $Dn has SID $($Account.SID.Value), not the record's $($Record.User.Sid)." "SID mismatch for $Dn"
+        return [pscustomobject]@{ Status = 'Refused'; Restored = 0; Failed = 0; Reason = $Refusal.Reason }
     }
 
     $Restored = 0
@@ -3759,12 +3765,199 @@ function Invoke-OffboardUndoRecord {
     }
 
     Set-BusyState -Busy $false -StatusText "Undo complete - $Restored restored, $Failed failed."
+    Write-AppLog "Undo of $($Record.User.SamAccountName) ($($Record.StartedUtc) UTC): $Restored restored, $Failed failed." $(if ($Failed -gt 0) { 'WARNING' } else { 'SUCCESS' })
 
-    $Message = "Restored $Restored item(s) for $($Record.User.DisplayName)."
-    if ($Failed -gt 0) { $Message += "`r`n$Failed could not be restored - see the Activity log." }
-    $Message += "`r`n`r`nThis only reverses the Active Directory changes. Anything done outside Active Directory - MFA, physical access, Microsoft 365, Intune or other systems - has to be put back by hand."
+    return [pscustomobject]@{ Status = 'Undone'; Restored = $Restored; Failed = $Failed; Reason = $null }
+}
 
-    Show-InfoMessage $Message
+function Get-OffboardUndoRunTime {
+    # When the run itself happened (StartedUtc in the record), for ordering -
+    # the file's date changes whenever a record is marked undone.
+    param($Record)
+    $Parsed = [datetime]::MinValue
+    if ([datetime]::TryParseExact([string]$Record.Data.StartedUtc, 'yyyy-MM-dd HH:mm:ss',
+            [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$Parsed)) {
+        return $Parsed.ToUniversalTime()
+    }
+    return ([datetime]$Record.When).ToUniversalTime()
+}
+
+function Show-OffboardUndoText {
+    # A resizable, scrollable text dialog for lists too long for a message box.
+    # -Confirm adds an Undo button; Cancel is the default either way, so Enter
+    # or Esc never starts an undo. Returns $true only when Undo was clicked.
+    param([string]$Title, [string]$Text, [string]$ConfirmText, [switch]$Confirm)
+
+    $Form = New-Object System.Windows.Forms.Form
+    $Form.Text = $Title
+    $Form.Size = New-Object System.Drawing.Size(860,560)
+    $Form.MinimumSize = New-Object System.Drawing.Size(560,320)
+    $Form.StartPosition = "CenterParent"
+
+    $Box = New-Object System.Windows.Forms.TextBox
+    $Box.Multiline = $true
+    $Box.ReadOnly = $true
+    $Box.ScrollBars = "Both"
+    $Box.WordWrap = $false
+    $Box.Font = New-Object System.Drawing.Font("Consolas",9)
+    $Box.Location = New-Object System.Drawing.Point(12,12)
+    $Box.Size = New-Object System.Drawing.Size(820,450)
+    $Box.Anchor = "Top,Bottom,Left,Right"
+    $Box.Text = $Text
+    $Form.Controls.Add($Box)
+
+    $Cancel = New-Object System.Windows.Forms.Button
+    $Cancel.Text = $(if ($Confirm) { "Cancel" } else { "OK" })
+    $Cancel.Size = New-Object System.Drawing.Size(110,30)
+    $Cancel.Location = New-Object System.Drawing.Point(722,474)
+    $Cancel.Anchor = "Bottom,Right"
+    $Cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $Form.Controls.Add($Cancel)
+    $Form.CancelButton = $Cancel
+    $Form.AcceptButton = $Cancel
+
+    if ($Confirm) {
+        $Go = New-Object System.Windows.Forms.Button
+        $Go.Text = $ConfirmText
+        $Go.Size = New-Object System.Drawing.Size(190,30)
+        $Go.Location = New-Object System.Drawing.Point(522,474)
+        $Go.Anchor = "Bottom,Right"
+        $Go.ForeColor = [System.Drawing.Color]::Red
+        $Go.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+        $Form.Controls.Add($Go)
+    }
+
+    $Form.Add_Shown({ $Cancel.Focus() | Out-Null; $Box.SelectionLength = 0 })
+    Apply-MSToolkitSharedTheme -Root $Form
+    $Result = $Form.ShowDialog()
+    $Form.Dispose()
+    return ($Result -eq [System.Windows.Forms.DialogResult]::Yes)
+}
+
+function Get-OffboardUndoRecordLabel {
+    param($Record)
+    "$($Record.Data.User.DisplayName) ($($Record.Data.User.SamAccountName)) - run $($Record.Data.StartedUtc) UTC by $($Record.Data.RanBy)"
+}
+
+function Invoke-OffboardUndoSelection {
+    # Undo one or more records in one go: check every record first, one combined
+    # confirmation (what will be undone, and what was refused and why), undo
+    # newest first, each record on its own, then a per-record summary.
+    param([object[]]$Records)
+
+    $Ordered = @($Records | Sort-Object { Get-OffboardUndoRunTime $_ } -Descending)
+
+    $Ready = New-Object System.Collections.Generic.List[object]
+    $Refused = New-Object System.Collections.Generic.List[object]
+
+    Set-BusyState -Busy $true -StatusText "Checking $($Ordered.Count) record(s)..."
+    try {
+        foreach ($Record in $Ordered) {
+            try {
+                $Preflight = Get-OffboardUndoPreflight -Record $Record.Data
+            }
+            catch {
+                $Preflight = New-OffboardUndoRefusal "The check could not be completed: $($_.Exception.Message)" "check failed for $(Get-OffboardUndoRecordLabel $Record)"
+            }
+
+            if ($Preflight.Refused) { $Refused.Add([pscustomobject]@{ Record = $Record; Reason = $Preflight.Reason }) }
+            else                    { $Ready.Add([pscustomobject]@{ Record = $Record; Preflight = $Preflight }) }
+        }
+    }
+    finally {
+        Set-BusyState -Busy $false
+    }
+
+    $NL = "`r`n"
+    $RefusedText = ''
+    if ($Refused.Count -gt 0) {
+        $RefusedText = "REFUSED - WILL NOT BE UNDONE ($($Refused.Count))$NL$('=' * 60)$NL"
+        foreach ($Item in $Refused) {
+            $RefusedText += "- $(Get-OffboardUndoRecordLabel $Item.Record)$NL    $($Item.Reason)$NL$NL"
+        }
+    }
+
+    $Footer = "Active Directory only. MFA, physical access, Microsoft 365, Intune and everything else stay as they are."
+
+    # Nothing can be undone: show why, and no confirmation.
+    if ($Ready.Count -eq 0) {
+        [void](Show-OffboardUndoText -Title "Nothing to undo" -Text ("None of the selected records can be undone.$NL$NL$RefusedText"))
+        return
+    }
+
+    $Text = "WILL BE UNDONE ($($Ready.Count)), newest first$NL$('=' * 60)$NL"
+    $Number = 0
+    foreach ($Item in $Ready) {
+        $Number++
+        $Data = $Item.Record.Data
+        $Pre = $Item.Preflight
+        $Text += "$Number. $($Pre.Account.DisplayName) ($($Pre.Account.SamAccountName)) - run $($Data.StartedUtc) UTC by $($Data.RanBy)$NL"
+        $Text += "   $($Pre.Account.DistinguishedName)$NL"
+        foreach ($Action in @($Data.Actions)) {
+            switch ($Action.Type) {
+                'DisableAccount' { if ($Action.Details.PreviousEnabled) { $Text += "   - Re-enable the account$NL" } else { $Text += "   - Account stays disabled (it was disabled before the run)$NL" } }
+                'ClearPhone'     { $Text += "   - Restore telephone '$($Action.Details.telephoneNumber)' and mobile '$($Action.Details.mobile)'$NL" }
+                'RemoveGroups'   { $Text += "   - Add back $(@($Action.Details.Groups).Count) group membership(s)$NL" }
+            }
+        }
+        if ($Pre.Moved) { $Text += "   NOTE: the account has moved. Was: $($Pre.RecordDn) - the undo uses its current location.$NL" }
+        foreach ($Missing in @($Pre.NotFound)) { $Text += "   NOTE: group not found, will be skipped: $Missing$NL" }
+        if ($Item.Record.Undone) { $Text += "   NOTE: already undone once - running it again does nothing new.$NL" }
+        $Text += $NL
+    }
+    $Text += $RefusedText + $Footer
+
+    $Label = if ($Ready.Count -eq 1) { "Undo 1 record" } else { "Undo $($Ready.Count) records" }
+    if (-not (Show-OffboardUndoText -Title "Confirm Undo" -Text $Text -Confirm -ConfirmText $Label)) {
+        Write-AppLog 'Undo cancelled.'
+        return
+    }
+
+    # Newest first, each on its own: one failure doesn't stop the rest.
+    $Results = New-Object System.Collections.Generic.List[object]
+    foreach ($Item in $Ready) {
+        $Label = Get-OffboardUndoRecordLabel $Item.Record
+        Write-AppLog "Undoing $Label." 'WARNING'
+        try {
+            $Outcome = Invoke-OffboardUndoRecord -Record $Item.Record.Data -Path $Item.Record.Path -Preflight $Item.Preflight
+        }
+        catch {
+            Write-AppLog "Undo failed for ${Label}: $($_.Exception.Message)" 'ERROR'
+            $Outcome = [pscustomobject]@{ Status = 'Failed'; Restored = 0; Failed = 0; Reason = $_.Exception.Message }
+        }
+        $Results.Add([pscustomobject]@{ Label = $Label; Outcome = $Outcome })
+        [System.Windows.Forms.Application]::DoEvents()
+    }
+    Set-BusyState -Busy $false
+
+    $Undone = @($Results | Where-Object { $_.Outcome.Status -eq 'Undone' -and $_.Outcome.Failed -eq 0 })
+    $Failed = @($Results | Where-Object { $_.Outcome.Status -eq 'Failed' -or ($_.Outcome.Status -eq 'Undone' -and $_.Outcome.Failed -gt 0) })
+    $LateRefused = @($Results | Where-Object { $_.Outcome.Status -eq 'Refused' })
+
+    $Summary = "Undone: $($Undone.Count)   Refused: $($Refused.Count + $LateRefused.Count)   Failed: $($Failed.Count)$NL$NL"
+    if ($Undone.Count) {
+        $Summary += "UNDONE$NL"
+        foreach ($R in $Undone) { $Summary += "- $($R.Label)$NL    $($R.Outcome.Restored) item(s) restored$NL" }
+        $Summary += $NL
+    }
+    if ($Failed.Count) {
+        $Summary += "FAILED$NL"
+        foreach ($R in $Failed) {
+            if ($R.Outcome.Status -eq 'Failed') { $Summary += "- $($R.Label)$NL    $($R.Outcome.Reason)$NL" }
+            else { $Summary += "- $($R.Label)$NL    $($R.Outcome.Restored) restored, $($R.Outcome.Failed) could not be restored - see the Activity log$NL" }
+        }
+        $Summary += $NL
+    }
+    if ($Refused.Count + $LateRefused.Count) {
+        $Summary += "REFUSED$NL"
+        foreach ($Item in $Refused) { $Summary += "- $(Get-OffboardUndoRecordLabel $Item.Record)$NL    $($Item.Reason)$NL" }
+        foreach ($R in $LateRefused) { $Summary += "- $($R.Label)$NL    $($R.Outcome.Reason)$NL" }
+        $Summary += $NL
+    }
+    $Summary += $Footer
+
+    Write-AppLog "Undo finished: $($Undone.Count) undone, $($Refused.Count + $LateRefused.Count) refused, $($Failed.Count) failed." $(if ($Failed.Count) { 'WARNING' } else { 'SUCCESS' })
+    [void](Show-OffboardUndoText -Title "Undo summary" -Text $Summary)
 }
 
 function Show-OffboardUndoDialog {
@@ -3782,7 +3975,7 @@ function Show-OffboardUndoDialog {
     $Dialog.MinimumSize = New-Object System.Drawing.Size(760,400)
 
     $Label = New-Object System.Windows.Forms.Label
-    $Label.Text = "Select a run to reverse. This puts back the Active Directory changes only: group memberships, phone numbers, and the account's enabled state."
+    $Label.Text = "Select one or more runs to reverse (Ctrl/Shift-click for several). This puts back the Active Directory changes only: group memberships, phone numbers, and the account's enabled state."
     $Label.Location = New-Object System.Drawing.Point(12,12)
     $Label.Size = New-Object System.Drawing.Size(940,36)
     $Label.Anchor = "Top,Left,Right"
@@ -3796,7 +3989,8 @@ function Show-OffboardUndoDialog {
     $Grid.AllowUserToAddRows = $false
     $Grid.RowHeadersVisible = $false
     $Grid.SelectionMode = "FullRowSelect"
-    $Grid.MultiSelect = $false
+    # Ctrl/Shift-click to pick several runs; Undo Selected handles them together.
+    $Grid.MultiSelect = $true
     $Grid.AutoSizeColumnsMode = "Fill"
     [void]$Grid.Columns.Add("When","When")
     [void]$Grid.Columns.Add("User","User")
@@ -3825,53 +4019,15 @@ function Show-OffboardUndoDialog {
     $BtnUndo.Anchor = "Bottom,Left"
     $BtnUndo.ForeColor = [System.Drawing.Color]::Red
     $BtnUndo.Add_Click({
-        $Row = $Grid.SelectedRows | Select-Object -First 1
-        if (-not $Row -or -not $Row.Tag) {
-            Show-InfoMessage 'Select a run first.'
+        $Selected = @($Grid.SelectedRows | Where-Object { $_.Tag } | ForEach-Object { $_.Tag })
+        if ($Selected.Count -eq 0) {
+            Show-InfoMessage 'Select one or more runs first.'
             return
         }
 
-        $Record = $Row.Tag
-        $Data = $Record.Data
-
-        # Every refusal happens here, before anyone is asked to confirm.
-        $Preflight = Get-OffboardUndoPreflight -Record $Data
-        if (-not $Preflight) { return }
-
-        $What = @()
-        foreach ($Action in @($Data.Actions)) {
-            switch ($Action.Type) {
-                'DisableAccount' { if ($Action.Details.PreviousEnabled) { $What += "  Re-enable the account" } }
-                'ClearPhone'     { $What += "  Restore telephone '$($Action.Details.telephoneNumber)' and mobile '$($Action.Details.mobile)'" }
-                'RemoveGroups'   { $What += "  Add back $(@($Action.Details.Groups).Count) group membership(s)" }
-            }
-        }
-
-        $Note = ""
-        if ($Preflight.Moved) {
-            $Note += "`r`n`r`nThe account has moved since this run.`r`nWas: $($Preflight.RecordDn)`r`nNow: $($Preflight.Account.DistinguishedName)`r`nThe undo uses its current location."
-        }
-        if (@($Preflight.NotFound).Count -gt 0) {
-            $Note += "`r`n`r`nThese group(s) could not be found and will be skipped:`r`n - $(@($Preflight.NotFound) -join "`r`n - ")"
-        }
-        if ($Record.Undone) { $Note += "`r`n`r`nThis run has already been undone once. Running it again is harmless but will do nothing new." }
-
-        $Answer = [System.Windows.Forms.MessageBox]::Show(
-            ("Reverse this offboarding?`r`n`r`n" +
-             "User: $($Preflight.Account.DisplayName) ($($Preflight.Account.SamAccountName))`r`n" +
-             "$($Preflight.Account.DistinguishedName)`r`n" +
-             "Run by $($Data.RanBy) at $($Data.StartedUtc) UTC`r`n`r`n" +
-             "This will:`r`n$($What -join "`r`n")$Note`r`n`r`n" +
-             "Active Directory only. MFA, physical access, Microsoft 365, Intune and everything else stay as they are."),
-            "Confirm Undo",
-            [System.Windows.Forms.MessageBoxButtons]::YesNo,
-            [System.Windows.Forms.MessageBoxIcon]::Warning,
-            [System.Windows.Forms.MessageBoxDefaultButton]::Button2)
-
-        if ($Answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
-
-        Write-AppLog "Undoing the offboarding of $($Data.User.SamAccountName) from $($Data.StartedUtc) UTC." 'WARNING'
-        Invoke-OffboardUndoRecord -Record $Data -Path $Record.Path -Preflight $Preflight
+        # Every record is checked before anything is confirmed; see
+        # Invoke-OffboardUndoSelection.
+        Invoke-OffboardUndoSelection -Records $Selected
         $Dialog.Close()
     })
     $Dialog.Controls.Add($BtnUndo)
