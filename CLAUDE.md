@@ -45,6 +45,7 @@ back to it, and changes from it only come in when re-done generically.
 | `MSToolkit.ico` | Icon for the EXE, the desktop shortcut and Apps & Features |
 | `README.md` | User and deployment documentation |
 | `LICENSE` | MIT licence |
+| `VERSION` | The release version, `MAJOR.MINOR.PATCH` - the only place it is set |
 | `docs/HANDOFF.md` | Design background and history |
 | `Build\Build-All.ps1`, `Build\Build-All.bat` | The one build command (section 3) |
 | `Build\Launchers\MSToolkitLauncher.cs` | Source of `MSToolkit.EXE`, the launcher the desktop shortcut points at |
@@ -58,6 +59,13 @@ back to it, and changes from it only come in when re-done generically.
 Framework 4.x `csc.exe` that ships with Windows, and `IntuneWinAppUtil.exe` for
 step 3.
 
+0. **Version.** Reads `VERSION` (`MAJOR.MINOR.PATCH`, e.g. `1.1.0`) and fails the
+   build if it is missing or malformed. The build stamps it into
+   `MSToolkit.EXE` (product version `1.1.0`, file version `1.1.0.0`); the
+   installer reads it back from the EXE and writes it to the Apps & Features
+   key as `DisplayVersion`, which the Intune detection rule (README 4.5)
+   compares. **For a release:** bump `VERSION`, build, tag `v<version>` (ask
+   before pushing the tag), and change the Intune rule's Value to match.
 1. **Launcher EXE.** Compiles `Build\Launchers\MSToolkitLauncher.cs` with the
    `csc.exe` that ships with Windows
    (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`, C# 5 only: no `$""`,

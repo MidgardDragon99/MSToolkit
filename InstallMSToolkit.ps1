@@ -233,6 +233,18 @@ $EstimatedSizeKB = [int][math]::Ceiling([double]$InstalledBytes / 1KB)
 
 New-Item -Path $UninstallKey -Force | Out-Null
 
+# The release version, stamped into MSToolkit.EXE by the build from the repo's
+# VERSION file. Written as DisplayVersion: Apps & Features shows it, and an Intune
+# detection rule can compare it, so a newer package upgrades an older install.
+$InstalledVersion = $null
+try {
+    $InstalledVersion = [string](Get-Item -LiteralPath (Join-Path $InstallDir "MSToolkit.EXE")).VersionInfo.ProductVersion
+} catch { }
+if ($InstalledVersion -notmatch '^\d+\.\d+\.\d+$') {
+    Write-Host "WARNING: could not read a version from MSToolkit.EXE ('$InstalledVersion'); DisplayVersion is not written." -ForegroundColor Yellow
+    $InstalledVersion = $null
+}
+
 $StringValues = [ordered]@{
     DisplayName     = "MSToolkit"
     DisplayIcon     = $IconPath
@@ -242,6 +254,7 @@ $StringValues = [ordered]@{
     # Used by management tools that uninstall silently: no result message box.
     QuietUninstallString = "`"$PowerShellExe`" -NoProfile -ExecutionPolicy Bypass -File `"$UninstallScript`""
 }
+if ($InstalledVersion) { $StringValues['DisplayVersion'] = $InstalledVersion }
 foreach ($Name in $StringValues.Keys) {
     New-ItemProperty -Path $UninstallKey -Name $Name -Value $StringValues[$Name] -PropertyType String -Force | Out-Null
 }
@@ -259,7 +272,7 @@ Write-Host ""
 Write-Host "MSToolkit installed to: $InstallDir"
 Write-Host "Logs folder: $LogsDir"
 Write-Host "Shortcut created: $ShortcutPath"
-Write-Host "Apps & Features entry created: MSToolkit"
+Write-Host "Apps & Features entry created: MSToolkit $InstalledVersion"
 
 if ($script:RsatRestartRequired) {
     Write-Host ""

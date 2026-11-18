@@ -4,8 +4,12 @@
     Builds MSToolkit: the launcher EXE, the 7-Zip SFX installers and the .intunewin.
 
 .DESCRIPTION
+    0. Version  - reads the release version (MAJOR.MINOR.PATCH) from the VERSION
+       file in the repo root. It is the only place the version is set.
     1. Launcher - compiles Build\Launchers\MSToolkitLauncher.cs to MSToolkit.EXE
-       with the csc.exe that ships with Windows (.NET Framework 4.x).
+       with the csc.exe that ships with Windows (.NET Framework 4.x), stamping
+       the version into it. The installer reads it back from the EXE and
+       writes it to Apps & Features as DisplayVersion.
     2. SFX      - runs Build-Install-Uninstall-Only.cmd unchanged, which makes
        MSToolkit-Install.exe and MSToolkit-Uninstall.exe.
     3. IntuneWin - stages the package folder in %TEMP% and runs
@@ -40,6 +44,7 @@ $IconFile     = Join-Path $RepoRoot "MSToolkit.ico"
 $SfxBuilder   = Join-Path $RepoRoot "Build-Install-Uninstall-Only.cmd"
 $SetupFile    = "install.cmd"
 $IntuneOutput = Join-Path $RepoRoot "install.intunewin"
+$VersionFile  = Join-Path $RepoRoot "VERSION"
 $StagingDir   = Join-Path $env:TEMP "MSToolkitBuild"
 $DownloadHint = "Download IntuneWinAppUtil.exe from Microsoft's Microsoft-Win32-Content-Prep-Tool repository on GitHub, then put it in the repo root or pass -IntuneWinAppUtil <path>."
 
@@ -53,6 +58,7 @@ $StagingExclude = @(
     "Build-Install-Uninstall-Only.cmd",
     "IntuneWinAppUtil.exe",
     "CLAUDE.md",
+    "VERSION",
     "MSToolkit-Project-Setup-Brief.md",
     ".gitignore",
     ".gitattributes"
@@ -69,21 +75,50 @@ function Add-Result {
 }
 
 # ---------------------------------------------------------------------------
+# 0. Version (the VERSION file is the only place it is set)
+# ---------------------------------------------------------------------------
+Write-Host ""
+Write-Host "[0/3] Version"
+
+$Version = $null
+try {
+    if (-not (Test-Path -LiteralPath $VersionFile)) { throw "VERSION file not found: $VersionFile" }
+    $VersionText = (Get-Content -LiteralPath $VersionFile -Raw).Trim()
+    if ($VersionText -notmatch '^\d+\.\d+\.\d+$') { throw "VERSION must be MAJOR.MINOR.PATCH (for example 1.1.0), found '$VersionText'." }
+    $Version = $VersionText
+    Add-Result "Version" "OK" "MSToolkit $Version"
+}
+catch {
+    Add-Result "Version" "FAILED" $_.Exception.Message
+}
+
+# The EXE carries the version as its product version (1.1.0) and its file
+# version (1.1.0.0). Returns what an EXE actually says.
+function Get-LauncherProductVersion {
+    param([string]$Path)
+    try { return [string](Get-Item -LiteralPath $Path).VersionInfo.ProductVersion } catch { return '' }
+}
+
+# ---------------------------------------------------------------------------
 # 1. Launcher EXE
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "[1/3] Launcher EXE"
 
 if ($SkipLauncher) {
-    if (Test-Path -LiteralPath $LauncherExe) {
-        Add-Result "Launcher" "SKIPPED" "Kept the existing MSToolkit.EXE"
+    if (-not (Test-Path -LiteralPath $LauncherExe)) {
+        Add-Result "Launcher" "FAILED" "-SkipLauncher was given but $LauncherExe does not exist"
+    }
+    elseif ($Version -and (Get-LauncherProductVersion $LauncherExe) -ne $Version) {
+        Add-Result "Launcher" "FAILED" "-SkipLauncher was given but the existing MSToolkit.EXE is version '$(Get-LauncherProductVersion $LauncherExe)', not $Version. Build without -SkipLauncher."
     }
     else {
-        Add-Result "Launcher" "FAILED" "-SkipLauncher was given but $LauncherExe does not exist"
+        Add-Result "Launcher" "SKIPPED" "Kept the existing MSToolkit.EXE ($(Get-LauncherProductVersion $LauncherExe))"
     }
 }
 else {
     try {
+        if (-not $Version) { throw "No valid version - see the Version step." }
         $Csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
         if (-not (Test-Path -LiteralPath $Csc)) {
             $Csc = Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe"
@@ -98,12 +133,24 @@ else {
         $TempDir = Join-Path $env:TEMP ("MSToolkitLauncher-{0}" -f [guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
         $TempExe = Join-Path $TempDir "MSToolkit.EXE"
+
+        # The version attributes are generated here, from VERSION, so the source
+        # file never has to be edited for a release.
+        $VersionSrc = Join-Path $TempDir "VersionInfo.cs"
+        @(
+            'using System.Reflection;'
+            "[assembly: AssemblyVersion(`"$Version.0`")]"
+            "[assembly: AssemblyFileVersion(`"$Version.0`")]"
+            "[assembly: AssemblyInformationalVersion(`"$Version`")]"
+        ) | Set-Content -LiteralPath $VersionSrc -Encoding ASCII
+
         $CscArgs = @(
             "/nologo", "/target:winexe", "/platform:anycpu", "/optimize+",
             "/out:$TempExe",
             "/win32icon:$IconFile",
             "/reference:System.Windows.Forms.dll",
-            $LauncherSrc
+            $LauncherSrc,
+            $VersionSrc
         )
         try {
             & $Csc @CscArgs
@@ -111,6 +158,8 @@ else {
 
             if ($CscExit -ne 0) { throw "csc.exe exited with code $CscExit." }
             if (-not (Test-Path -LiteralPath $TempExe)) { throw "csc.exe reported success but produced no EXE." }
+            $Stamped = Get-LauncherProductVersion $TempExe
+            if ($Stamped -ne $Version) { throw "The compiled EXE reports version '$Stamped', not $Version." }
 
             Copy-Item -LiteralPath $TempExe -Destination $LauncherExe -Force
         }
@@ -119,7 +168,7 @@ else {
         }
 
         if (-not (Test-Path -LiteralPath $LauncherExe)) { throw "MSToolkit.EXE is missing after the copy." }
-        Add-Result "Launcher" "OK" "Compiled $LauncherExe"
+        Add-Result "Launcher" "OK" "Compiled $LauncherExe (version $Version)"
     }
     catch {
         Add-Result "Launcher" "FAILED" $_.Exception.Message
