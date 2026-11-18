@@ -4386,6 +4386,9 @@ function New-OffboardStep {
     $Check.Size = New-Object System.Drawing.Size(1060,22)
     $Check.Anchor = "Top,Left,Right"
     $Check.Font = New-Object System.Drawing.Font("Segoe UI Semibold",9.5)
+    # Kept on the box for the "unticked by hand" log line.
+    $Check | Add-Member -NotePropertyName StepNumber -NotePropertyValue $Number
+    $Check | Add-Member -NotePropertyName StepTitle -NotePropertyValue $Title
     $Check.Add_CheckedChanged({ Update-StepProgress })
 
     # Ticking the step itself ticks all of its sub-steps, and clearing it clears
@@ -4395,6 +4398,12 @@ function New-OffboardStep {
         param($ClickSender, $ClickArgs)
 
         try {
+            # Click is a real click (or Space), never a tick changed by code, so
+            # Undo and the actions do not log here - they write their own lines.
+            if (-not $ClickSender.Checked) {
+                Write-AppLog "Step $($ClickSender.StepNumber) unticked by hand: $($ClickSender.StepTitle)"
+            }
+
             $Subs = $ClickSender.Tag
             if ($null -eq $Subs) { return }
 
@@ -4530,7 +4539,14 @@ function New-OffboardStep {
 
                 try {
                     $ClickSender.Checked = -not $ClickSender.Checked
-                    Update-ParentStep -Parent $ClickSender.Tag
+                    $Parent = $ClickSender.Tag
+                    $WasTicked = [bool]($Parent -and $Parent.Checked)
+                    Update-ParentStep -Parent $Parent
+
+                    # Clearing a sub-step by hand unticks its step, so that counts too.
+                    if ($WasTicked -and -not $Parent.Checked) {
+                        Write-AppLog "Step $($Parent.StepNumber) unticked by hand: $($Parent.StepTitle)"
+                    }
                 }
                 catch {
                     Write-AppLog "Sub-step toggle failed: $($_.Exception.Message)" 'ERROR'

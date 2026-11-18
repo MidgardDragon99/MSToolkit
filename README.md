@@ -492,6 +492,7 @@ A checklist for a departing employee: it runs the Active Directory work itself, 
   16. Calendar reminder - move the account to the disabled OU
   17. Line-of-business application accounts *(when any are listed)*
   18. File the completed checklist
+- Unticking a step by hand (its box, or one of its sub-steps) writes `Step N unticked by hand: <title>` to the Activity log. Ticks changed by the tool itself, including Undo, are not logged this way.
 - A disabled account shows **DISABLED** in red on the **LOADED:** line. The line is re-read from AD after Disable, Clear Phone, Do All Local Actions and Undo, so it shows the account's current state without another Load User.
 - **Undo...** reverses a previous run, even days later: group memberships first, then phone numbers, then re-enabling the account (unless it was already disabled before the run). Each run is journalled to `%LOCALAPPDATA%\MSToolkit\Offboard-Undo` in the admin account's own profile, written after every change. Undo refuses a record whose SID no longer matches the account, never adds anyone to protected groups, and only covers Active Directory - everything else is put back by hand.
 - **Copy Checklist** and **Finish** produce a record for the ticket: the user's details, who ran it and when, the export path, and every step as `[x]` or `[ ]` with sub-steps beneath. Finish also writes it to a text file and opens it.

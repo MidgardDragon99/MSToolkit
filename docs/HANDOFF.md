@@ -284,6 +284,11 @@ assigned at creation so there are no gaps.
   17 line-of-business systems, 18 file the checklist. MFA and physical access
   come after the local AD actions, matching the internal build. Nothing in the
   code refers to a step by number.
+- **Untick log:** a real click that unticks a step (or a sub-step click that
+  unticks its parent) logs `Step N unticked by hand: <title>`. It hangs off the
+  `Click` event, which code changes to `.Checked` never raise, so Undo's own
+  "step unticked" lines are not duplicated. Number and title are NoteProperties
+  on the checkbox (`StepNumber`, `StepTitle`).
 - **LOADED:** line; a disabled account shows **DISABLED** in a separate red label
   placed with `TextRenderer.MeasureText`. Redrawn from a fresh AD read after
   Disable, Clear Phone, Do All Local Actions (`Update-OffboardCurrentUser`) and
