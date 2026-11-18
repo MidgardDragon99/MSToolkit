@@ -283,8 +283,14 @@ assigned at creation so there are no gaps.
   placed with `TextRenderer.MeasureText`.
 - **Undo...** - JSON journal per run in `%LOCALAPPDATA%\MSToolkit\Offboard-Undo`,
   flushed after each action. Reverses groups, then attributes, then re-enables
-  (unless already disabled before the run). Refuses a SID mismatch and never adds
-  to protected groups. AD only.
+  (unless already disabled before the run). AD only. Before the confirmation
+  (`Get-OffboardUndoPreflight`) it refuses a record with no SID, resolves the
+  account **by SID** (refused if not found; a moved account is named in the
+  confirmation and its current DN is used), refuses a protected account, and
+  resolves every group in the record - refusing the whole record if any is
+  protected, since offboarding never removes one. Groups that can't be found are
+  listed and skipped. During the undo it re-checks the SID and each group again.
+  New records store each group's SID; older ones are resolved by DN.
 - **Copy Checklist / Finish** - text record with `[x]` / `[ ]`, sub-steps, and
   `- Done` / `- DEFERRED, to be done later`.
 - `-WithDelegate` is opt-in per launch: the group tools don't accept `-Delegate`
