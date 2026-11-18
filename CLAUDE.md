@@ -217,9 +217,6 @@ There are no automated tests. After a change:
 
 ## 9. Open items
 
-- **Remove `MSToolkit.lnk` from the package** (installer `$PayloadFiles`, builder
-  validation and archive lists, README). The installer already creates the
-  shortcut.
 - **Compiled launcher and `Build\Build-All`** (section 3) to replace the hand-built
   IExpress `MSToolkit.EXE`.
 - **Neutral sample name** in the ComboBox prefix-matching comment in the eight
