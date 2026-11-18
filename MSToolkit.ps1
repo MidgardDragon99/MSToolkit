@@ -4133,16 +4133,22 @@ function Add-UserToGroup {
     $Sam = Get-InputBox "Add User to Group" "Enter username / sAMAccountName:"
     if (-not $Sam) { return }
 
-    $GroupName = Get-InputBox "Add User to Group" "Enter group name / sAMAccountName / distinguishedName:"
-    if (-not $GroupName) { return }
-
     try {
         $Server = Get-SelectedServer
+
+        # Resolve the user and run the critical-user check (by SID / RID and
+        # isCriticalSystemObject, never the name) before asking for a group, the
+        # same as every other user operation. A name that resolves to no account
+        # stops here too.
         $User = Get-ADUser -Identity $Sam -Server $Server -Properties SID,isCriticalSystemObject,DisplayName,DistinguishedName -ErrorAction Stop
-        $Group = Get-ADGroup -Identity $GroupName -Server $Server -Properties SID,isCriticalSystemObject,Name,SamAccountName,DistinguishedName -ErrorAction Stop
 
         $CriticalUserReason = Get-MSToolkitCriticalUserReason -User $User
         if (Stop-MSToolkitCriticalOperation -ObjectType "User" -DisplayName "$($User.DisplayName) ($($User.SamAccountName))" -Operation "Change group membership" -Reason $CriticalUserReason) { return }
+
+        $GroupName = Get-InputBox "Add User to Group" "Add $($User.SamAccountName) to which group? Enter group name / sAMAccountName / distinguishedName:"
+        if (-not $GroupName) { return }
+
+        $Group = Get-ADGroup -Identity $GroupName -Server $Server -Properties SID,isCriticalSystemObject,Name,SamAccountName,DistinguishedName -ErrorAction Stop
 
         $CriticalGroupReason = Get-MSToolkitCriticalGroupReason -Group $Group
         if (Stop-MSToolkitCriticalOperation -ObjectType "Group" -DisplayName "$($Group.Name)" -Operation "Add group member" -Reason $CriticalGroupReason) { return }
