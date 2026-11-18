@@ -2508,9 +2508,12 @@ function Remove-OffboardGroups {
                     -Server $script:WorkingServer -Confirm:$false -ErrorAction Stop
 
                 $Removed++
+                # The SID lets Undo find the group even if it is moved or renamed
+                # later; records written before it was added carry the DN only.
                 $RemovedGroups += ,([ordered]@{
                     Name              = [string]$Group.Name
                     DistinguishedName = [string]$Group.DistinguishedName
+                    Sid               = (Get-MSToolkitSidString -DirectoryObject $Group)
                 })
 
                 Write-AppLog "Removed from $($Group.Name)." 'SUCCESS'
@@ -3493,31 +3496,113 @@ function Get-OffboardUndoRecords {
     return $Records.ToArray()
 }
 
+function Stop-OffboardUndo {
+    # One place for every refusal: an error box saying nothing was changed, and
+    # an ERROR line in the Activity log.
+    param([string]$Message, [string]$LogText)
+    Show-ErrorMessage "$Message`r`n`r`nNothing was restored."
+    Write-AppLog "Undo refused - $LogText" 'ERROR'
+}
+
+function Get-OffboardUndoPreflight {
+    # Every check that can refuse an undo, run BEFORE the confirmation so a bad
+    # record is stopped before anyone is asked to approve it. Returns $null when
+    # the record is refused (the reason has already been shown), otherwise what
+    # the undo and the confirmation need:
+    #   Account   - the account, resolved by SID (never by DN)
+    #   Moved     - $true when its DN is not the one in the record
+    #   GroupDns  - record DN -> current DN for every group that was found
+    #   NotFound  - groups that could not be found (skipped, and listed)
+    param($Record)
+
+    $Server = $script:WorkingServer
+    $Sid = [string]$Record.User.Sid
+    $RecordDn = [string]$Record.User.DistinguishedName
+    $Who = "$($Record.User.DisplayName) ($($Record.User.SamAccountName))"
+
+    # 1. A record without a SID cannot be tied to one account for certain.
+    if ([string]::IsNullOrWhiteSpace($Sid)) {
+        Stop-OffboardUndo ("This record has no SID for $Who, so the account cannot be identified for certain.`r`n`r`n" +
+            "Undo it by hand in Active Directory Users and Computers.") "record has no SID: $Who"
+        return $null
+    }
+
+    # 2. Find the account by SID, wherever it is now.
+    try {
+        $Account = Get-ADUser -Identity $Sid -Server $Server `
+            -Properties SID,isCriticalSystemObject,Enabled,DisplayName,SamAccountName,DistinguishedName,telephoneNumber,mobile,MemberOf -ErrorAction Stop
+    }
+    catch {
+        Stop-OffboardUndo ("No account with this record's SID could be found on $($Server).`r`n`r`n$Who`r`nSID: $Sid`r`n`r`n" +
+            "It may have been deleted. Undo by hand if it still exists.`r`n`r`n$($_.Exception.Message)") "account not found by SID $Sid ($Who)"
+        return $null
+    }
+
+    # 3. Never restore anything for a protected account.
+    $Critical = Get-MSToolkitCriticalUserReason -User $Account
+    if ($Critical) {
+        Stop-OffboardUndo ("OPERATION BLOCKED`r`n`r`n$($Account.DisplayName) ($($Account.SamAccountName)) is a protected account.`r`nReason: $Critical") "protected account $($Account.SamAccountName) - $Critical"
+        return $null
+    }
+
+    # 4. Resolve every group in the record. Offboarding never removes protected
+    #    groups, so a record naming one was not written by this tool: refuse the
+    #    whole record. Groups that can't be found are skipped and listed.
+    $GroupDns = @{}
+    $Protected = New-Object System.Collections.Generic.List[string]
+    $NotFound = New-Object System.Collections.Generic.List[string]
+
+    foreach ($Action in @($Record.Actions | Where-Object { $_.Type -eq 'RemoveGroups' })) {
+        foreach ($Group in @($Action.Details.Groups)) {
+            $GroupId = if ($Group.Sid) { [string]$Group.Sid } else { [string]$Group.DistinguishedName }
+            try {
+                $GroupObject = Get-ADGroup -Identity $GroupId -Server $Server -Properties SID,isCriticalSystemObject -ErrorAction Stop
+            }
+            catch {
+                $NotFound.Add("$($Group.Name)  -  $($_.Exception.Message)")
+                continue
+            }
+
+            $Reason = Get-MSToolkitCriticalGroupReason -Group $GroupObject
+            if ($Reason) {
+                $Protected.Add("$($GroupObject.Name)  -  $Reason")
+                continue
+            }
+
+            $GroupDns[[string]$Group.DistinguishedName] = [string]$GroupObject.DistinguishedName
+        }
+    }
+
+    if ($Protected.Count -gt 0) {
+        Stop-OffboardUndo ("OPERATION BLOCKED`r`n`r`nThis record names protected group(s):`r`n`r`n - $(($Protected.ToArray()) -join "`r`n - ")`r`n`r`n" +
+            "Offboarding never removes protected groups, so this record was not written by this tool and will not be used.") "record names protected group(s): $(($Protected.ToArray()) -join '; ')"
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Account  = $Account
+        Moved    = ([string]$Account.DistinguishedName -ne $RecordDn)
+        RecordDn = $RecordDn
+        GroupDns = $GroupDns
+        NotFound = $NotFound.ToArray()
+    }
+}
+
 function Invoke-OffboardUndoRecord {
     # Reverses in the opposite order to the run: groups back first, then the
     # phone numbers, then the account itself - so the account is only re-enabled
-    # once its access is back.
-    param($Record, [string]$Path)
+    # once its access is back. The record has already passed
+    # Get-OffboardUndoPreflight; the account is used at its CURRENT DN.
+    param($Record, [string]$Path, $Preflight)
 
-    $Dn = [string]$Record.User.DistinguishedName
     $Server = $script:WorkingServer
+    $Account = $Preflight.Account
+    $Dn = [string]$Account.DistinguishedName
 
-    try {
-        $Account = Get-ADUser -Identity $Dn -Server $Server -Properties Enabled,telephoneNumber,mobile,MemberOf -ErrorAction Stop
-    }
-    catch {
-        Show-ErrorMessage ("The account in this record could not be found on $($Server).`r`n`r`n$Dn`r`n`r`n" +
-            "If it has been moved or renamed, it has to be put back by hand.`r`n`r`n$($_.Exception.Message)")
-        Write-AppLog "Undo failed - account not found: $Dn" 'ERROR'
-        return
-    }
-
-    # The record names the account by DN and SID. If the SID no longer matches,
-    # this is a different account now living at that DN - refuse.
-    if ($Record.User.Sid -and ([string]$Account.SID.Value -ne [string]$Record.User.Sid)) {
-        Show-ErrorMessage ("This record does not match the account now at:`r`n$Dn`r`n`r`n" +
-            "Record SID: $($Record.User.Sid)`r`nAccount SID: $($Account.SID.Value)`r`n`r`nNothing was restored.")
-        Write-AppLog "Undo refused - SID mismatch for $Dn." 'ERROR'
+    # Second line of defence: the account must still carry the record's SID.
+    if ([string]$Account.SID.Value -ne [string]$Record.User.Sid) {
+        Stop-OffboardUndo ("This record does not match the account now at:`r`n$Dn`r`n`r`n" +
+            "Record SID: $($Record.User.Sid)`r`nAccount SID: $($Account.SID.Value)") "SID mismatch for $Dn"
         return
     }
 
@@ -3536,10 +3621,19 @@ function Invoke-OffboardUndoRecord {
                 $GroupsRestored = $false
 
                 foreach ($Group in @($Action.Details.Groups)) {
-                    # Offboarding never removes protected groups, so a record naming
-                    # one was not written by it. Never add anyone to them from here.
+                    # Where the group is now; groups the check could not find are
+                    # skipped (they were listed in the confirmation).
+                    $GroupDn = $Preflight.GroupDns[[string]$Group.DistinguishedName]
+                    if (-not $GroupDn) {
+                        $Failed++
+                        Write-AppLog "Skipped $($Group.Name) - the group could not be found." 'WARNING'
+                        continue
+                    }
+
+                    # Second line of defence: offboarding never removes protected
+                    # groups, so never add anyone to one from here.
                     try {
-                        $GroupObject = Get-ADGroup -Identity $Group.DistinguishedName -Server $Server -Properties isCriticalSystemObject -ErrorAction Stop
+                        $GroupObject = Get-ADGroup -Identity $GroupDn -Server $Server -Properties SID,isCriticalSystemObject -ErrorAction Stop
                         $Protected = Get-MSToolkitCriticalGroupReason -Group $GroupObject
                         if ($Protected) {
                             $Failed++
@@ -3556,7 +3650,7 @@ function Invoke-OffboardUndoRecord {
                     try {
                         Set-BusyState -Busy $true -StatusText "Restoring $($Group.Name)..."
 
-                        Add-ADGroupMember -Identity $Group.DistinguishedName -Members $Dn `
+                        Add-ADGroupMember -Identity $GroupDn -Members $Dn `
                             -Server $Server -Confirm:$false -ErrorAction Stop
 
                         $Restored++
@@ -3740,6 +3834,10 @@ function Show-OffboardUndoDialog {
         $Record = $Row.Tag
         $Data = $Record.Data
 
+        # Every refusal happens here, before anyone is asked to confirm.
+        $Preflight = Get-OffboardUndoPreflight -Record $Data
+        if (-not $Preflight) { return }
+
         $What = @()
         foreach ($Action in @($Data.Actions)) {
             switch ($Action.Type) {
@@ -3750,12 +3848,18 @@ function Show-OffboardUndoDialog {
         }
 
         $Note = ""
-        if ($Record.Undone) { $Note = "`r`n`r`nThis run has already been undone once. Running it again is harmless but will do nothing new." }
+        if ($Preflight.Moved) {
+            $Note += "`r`n`r`nThe account has moved since this run.`r`nWas: $($Preflight.RecordDn)`r`nNow: $($Preflight.Account.DistinguishedName)`r`nThe undo uses its current location."
+        }
+        if (@($Preflight.NotFound).Count -gt 0) {
+            $Note += "`r`n`r`nThese group(s) could not be found and will be skipped:`r`n - $(@($Preflight.NotFound) -join "`r`n - ")"
+        }
+        if ($Record.Undone) { $Note += "`r`n`r`nThis run has already been undone once. Running it again is harmless but will do nothing new." }
 
         $Answer = [System.Windows.Forms.MessageBox]::Show(
             ("Reverse this offboarding?`r`n`r`n" +
-             "User: $($Data.User.DisplayName) ($($Data.User.SamAccountName))`r`n" +
-             "$($Data.User.DistinguishedName)`r`n" +
+             "User: $($Preflight.Account.DisplayName) ($($Preflight.Account.SamAccountName))`r`n" +
+             "$($Preflight.Account.DistinguishedName)`r`n" +
              "Run by $($Data.RanBy) at $($Data.StartedUtc) UTC`r`n`r`n" +
              "This will:`r`n$($What -join "`r`n")$Note`r`n`r`n" +
              "Active Directory only. MFA, physical access, Microsoft 365, Intune and everything else stay as they are."),
@@ -3767,7 +3871,7 @@ function Show-OffboardUndoDialog {
         if ($Answer -ne [System.Windows.Forms.DialogResult]::Yes) { return }
 
         Write-AppLog "Undoing the offboarding of $($Data.User.SamAccountName) from $($Data.StartedUtc) UTC." 'WARNING'
-        Invoke-OffboardUndoRecord -Record $Data -Path $Record.Path
+        Invoke-OffboardUndoRecord -Record $Data -Path $Record.Path -Preflight $Preflight
         $Dialog.Close()
     })
     $Dialog.Controls.Add($BtnUndo)
