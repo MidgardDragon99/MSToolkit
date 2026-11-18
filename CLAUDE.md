@@ -200,6 +200,44 @@ The main branch is `main`. **There is no remote yet.** The `git pull` and
 - Tag each release they publish or deploy: `git tag v<version>` or
   `released-YYYY-MM-DD`, pushed with `git push origin <tag>` after asking.
 
+**GitHub CLI (`gh`)**
+
+- Before any `gh` command, run `gh auth status` and make sure the active
+  account is the one that owns this repository; switch with
+  `gh auth switch --user <owner>` if it isn't. The maintainer uses other
+  accounts for other repositories, so never assume the active one.
+- `gh` is never git's credential helper. Don't run `gh auth setup-git`, and
+  don't set `credential.helper` to `gh`. Pushes go through git with its own
+  credential manager.
+- `gh` may not be on the Bash `PATH` after a fresh install; call
+  `"/c/Program Files/GitHub CLI/gh.exe"` directly.
+
+**GitHub Releases (each version)**
+
+After `main` is pushed and the `v<version>` tag is pushed:
+
+1. Check the build matches the tag: `git rev-parse HEAD` equals
+   `git rev-parse v<version>^{}`, the tree is clean, and the installers were
+   built after that commit. Otherwise `git switch --detach v<version>`,
+   `Build\Build-All.bat`, `git switch main`.
+2. Unpack `MSToolkit-Install.exe` with 7-Zip into the scratchpad. Confirm the
+   bundled `MSToolkit.EXE` reports product version `<version>`, and that every
+   other payload file matches `git show v<version>:<file>`.
+3. Get the SHA256 of `MSToolkit-Install.exe` and `MSToolkit-Uninstall.exe`
+   (`Get-FileHash -Algorithm SHA256`).
+4. Draft the notes for admins who will install it, in plain English with no
+   internal test names: what changed since the previous tag, a highlights
+   section for a longer span if asked, the downloads, the hashes, the version
+   to put in the Intune detection rule (README 4.5), and that the EXEs aren't
+   code-signed, so SmartScreen may warn. **Show the notes and ask before
+   creating the release.**
+5. After a yes:
+   `gh release create v<version> --verify-tag --title "MSToolkit <version>" --notes-file <notes.md> MSToolkit-Install.exe MSToolkit-Uninstall.exe`.
+   Attach only those two. Never attach `IntuneWinAppUtil.exe`,
+   `install.intunewin`, logs or anything from `local\`.
+6. Verify with `gh release view v<version>`: the asset names and sizes are
+   right, and downloaded assets hash to the values in the notes.
+
 **Builds and hand-over (standing rule)**
 
 - **Whenever handing over a test-batch or a test list, build first.** Run
