@@ -2561,36 +2561,43 @@ $MainForm.Add_Shown({
     if (-not $script:txtAdminUrl.Text) {
         Write-AppLog 'Enter the tenant admin URL - https://<tenant>-admin.sharepoint.com - then Connect.' 'WARN'
     }
-    else {
-        $script:lblStatus.Text = 'Click Connect to sign in to SharePoint Online.'
-    }
 })
 
 $MainForm.Add_Resize({ Resize-OdGrids })
 
 Hide-PowerShellConsole
+
 # Type-ahead filtering on every editable dropdown. Its own handler, not folded
 # into another, so it runs on every launch rather than only when the tool is
 # started with parameters - and so a failure here cannot stop the rest of
 # start-up. Multiple Shown handlers chain.
-# Opened by Offboard User for a handover: connect, select Offboarding, fill in the
-# owner and manager, and build the report. Grant Handover is left for the operator
-# to click - it gives full control of the files, so it should not happen merely
-# because a window opened. Its own handler, with the condition inside.
+$MainForm.Add_Shown({ Register-MSToolkitComboFiltersOn -Root $MainForm })
+
+# Connect on open when an admin URL is known (without one, the warning above asks
+# for it and Connect is left to the operator). Connect-SPOService reuses a cached
+# sign-in when the module can and prompts otherwise. Opened by Offboard User for a
+# handover (-ManageUser / -Delegate): also select Offboarding, fill in the owner
+# and manager, and build the report. Grant Handover is left for the operator to
+# click - it gives full control of the files, so it should not happen merely
+# because a window opened. -AutoConnect is still accepted but no longer needed.
+# Its own handler with the conditions inside, registered last.
 $MainForm.Add_Shown({
-    if (-not ($AutoConnect -or $ManageUser)) { return }
+    try {
+        if ($ManageUser -or $Delegate) {
+            $Tabs.SelectedTab = $tabOffboard
+            if ($ManageUser) { $script:cboOffboardUser.Text = $ManageUser }
+            if ($Delegate)   { $script:cboOffboardManager.Text = $Delegate }
+        }
 
-    $Tabs.SelectedTab = $tabOffboard
-    if ($ManageUser) { $script:cboOffboardUser.Text = $ManageUser }
-    if ($Delegate)   { $script:cboOffboardManager.Text = $Delegate }
+        if ([string]::IsNullOrWhiteSpace("$($script:txtAdminUrl.Text)")) { return }
 
-    if ($AutoConnect) {
-        Connect-M365SharePoint
+        if (-not $script:SPOConnected) { Connect-M365SharePoint }
         if ($script:SPOConnected -and $ManageUser) { Invoke-OneDriveOffboardReport }
     }
+    catch {
+        Write-AppLog "Automatic connect failed: $($_.Exception.Message)" 'ERROR'
+    }
 })
-
-$MainForm.Add_Shown({ Register-MSToolkitComboFiltersOn -Root $MainForm })
 
 [void]$MainForm.ShowDialog()
 

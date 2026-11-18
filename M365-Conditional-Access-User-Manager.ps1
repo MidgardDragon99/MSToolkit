@@ -2169,4 +2169,19 @@ Apply-MSToolkitSharedTheme -Root $MainForm
 # start-up. Multiple Shown handlers chain.
 $MainForm.Add_Shown({ Register-MSToolkitComboFiltersOn -Root $MainForm })
 
+# Connect on open unless already connected. Connect-MgGraph signs in silently with
+# the cached Windows account when it can and prompts otherwise. Its own top-level
+# handler, registered last, after the rest of start-up.
+$MainForm.Add_Shown({
+    try {
+        if (-not $script:GraphConnected) {
+            Write-AppLog 'Connecting automatically...'
+            Connect-ConditionalAccessGraph
+        }
+    }
+    catch {
+        Write-AppLog "Automatic connect failed: $($_.Exception.Message)" 'ERROR'
+    }
+})
+
 [void]$MainForm.ShowDialog()

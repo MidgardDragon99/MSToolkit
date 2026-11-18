@@ -47,6 +47,11 @@ try {
         Add-Type -Namespace 'IntuneTools' -Name 'Native' -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+[DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+[DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+[DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
 '@ -ErrorAction Stop
     }
     $script:NativeWindowHelper = $true
@@ -453,9 +458,10 @@ function Start-BrowserSignIn {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Process $authUrl
 
-        # wait for the browser to come back, keeping the UI responsive
+        # wait for the browser to come back, keeping the UI responsive. Up to 10
+        # minutes: MFA, a password change or picking an account can take a while.
         $task     = $listener.GetContextAsync()
-        $deadline = (Get-Date).AddSeconds(180)
+        $deadline = (Get-Date).AddMinutes(10)
         while (-not $task.AsyncWaitHandle.WaitOne(200)) {
             [System.Windows.Forms.Application]::DoEvents()
             if ($script:SignInCancelled) { break }
@@ -933,7 +939,9 @@ function Set-AppTheme {
 function Show-MainWindow {
     # Called after the browser has had focus during sign-in. Windows blocks a
     # plain Activate() from stealing foreground, so this uses the TopMost
-    # toggle plus SetForegroundWindow, and falls back quietly if either fails.
+    # toggle, then attaches to the foreground window's input thread for
+    # BringWindowToTop / SetForegroundWindow, and falls back quietly if any of
+    # it fails.
     if (-not $script:MainForm -or $script:MainForm.IsDisposed) { return }
     try {
         $minimized = ($script:MainForm.WindowState -eq [System.Windows.Forms.FormWindowState]::Minimized)
@@ -957,9 +965,29 @@ function Show-MainWindow {
         [System.Windows.Forms.Application]::DoEvents()
         $script:MainForm.TopMost = $wasTopMost
 
-        # bring to the foreground without touching the size
+        # bring to the foreground without touching the size. Windows only lets the
+        # thread that owns the foreground window hand it over, so attach to that
+        # thread's input first and always detach again afterwards.
         if ($script:NativeWindowHelper -and $script:MainForm.Handle -ne [IntPtr]::Zero) {
-            [IntuneTools.Native]::SetForegroundWindow($script:MainForm.Handle) | Out-Null
+            $thisThread = [IntuneTools.Native]::GetCurrentThreadId()
+            $fgThread   = [uint32]0
+            $attached   = $false
+            try {
+                $fgWindow = [IntuneTools.Native]::GetForegroundWindow()
+                if ($fgWindow -ne [IntPtr]::Zero) {
+                    $fgPid = [uint32]0
+                    $fgThread = [IntuneTools.Native]::GetWindowThreadProcessId($fgWindow, [ref]$fgPid)
+                }
+                if ($fgThread -ne 0 -and $fgThread -ne $thisThread) {
+                    $attached = [IntuneTools.Native]::AttachThreadInput($thisThread, $fgThread, $true)
+                }
+                [IntuneTools.Native]::BringWindowToTop($script:MainForm.Handle) | Out-Null
+                [IntuneTools.Native]::SetForegroundWindow($script:MainForm.Handle) | Out-Null
+            } finally {
+                if ($attached) {
+                    [IntuneTools.Native]::AttachThreadInput($thisThread, $fgThread, $false) | Out-Null
+                }
+            }
         }
 
         $script:MainForm.Focus() | Out-Null
@@ -5601,17 +5629,12 @@ function Initialize-OffboardUserMode {
     $script:OffboardStrip.Visible = $true
     $script:LblOffboardUser.Text = "Offboarding: $ManageUser"
 
+    # The start-up handler has already tried to connect (silent refresh, then
+    # sign-in), so this doesn't sign in again - that would prompt a second time
+    # straight after a cancelled sign-in.
     if (-not (Test-GraphConnected)) {
-        if (-not $AutoConnect) { Set-OffboardStatus 'Connect to use these actions.' 'warn'; return }
-        Start-Busy 'Signing in...'
-        try {
-            if (Connect-IntuneGraph) { Set-ConnectedState $true; Stop-Busy "Connected as $($script:Account)" }
-            else { Set-ConnectedState $false; Stop-Busy 'Not connected'; Set-OffboardStatus 'Not connected.' 'warn'; return }
-        } catch {
-            Stop-Busy 'Sign-in failed'
-            Set-OffboardStatus "Sign-in failed: $($_.Exception.Message)" 'error'
-            return
-        }
+        Set-OffboardStatus 'Not connected. Click Connect, then reopen this from Offboard User.' 'warn'
+        return
     }
 
     try {
@@ -5826,11 +5849,8 @@ $script:BtnOffRevoke.Add_Click({ Invoke-OffboardRevokeSessions })
 $script:BtnOffWipe.Add_Click({ Show-OffboardAppWipe })
 $script:BtnOffRetire.Add_Click({ Invoke-OffboardRetire })
 
-# Offboarding user mode - its own handler, with the condition inside.
-$script:MainForm.Add_Shown({
-    if ($ManageUser) { Initialize-OffboardUserMode }
-})
-
+# Shown handlers run in the order they are registered, one after another, so the
+# layout goes first and the sign-in (which can wait up to 10 minutes) after it.
 $script:MainForm.Add_Shown({
     Set-SplitterSafe -Split $devSplit  -Distance 380
     Set-SplitterSafe -Split $appSplit  -Distance 380
@@ -5839,6 +5859,39 @@ $script:MainForm.Add_Shown({
     Set-SplitterSafe -Split $pkgSplit  -Distance 300
     Set-SplitterSafe -Split $pkgLists  -Distance 400
     $script:MainForm.Activate()
+})
+
+# Connect on open: a silent refresh with the cached token first, then the
+# configured sign-in (Connect-IntuneGraph does both, in that order). Skipped
+# until a Tenant ID and Client ID are saved. -AutoConnect is still accepted but
+# no longer needed. Its own handler, with the conditions inside.
+$script:MainForm.Add_Shown({
+    if ([string]::IsNullOrWhiteSpace($script:Config.TenantId) -or
+        [string]::IsNullOrWhiteSpace($script:Config.ClientId)) {
+        Set-Status 'Enter your Tenant ID and Client ID on the Settings tab, Save, then Connect.'
+        return
+    }
+    if ($script:IsConnected) { return }
+
+    Start-Busy 'Signing in...'
+    try {
+        if (Connect-IntuneGraph) {
+            Set-ConnectedState $true
+            Stop-Busy "Connected as $($script:Account)"
+        } else {
+            Set-ConnectedState $false
+            Stop-Busy 'Not connected'
+        }
+    } catch {
+        Set-ConnectedState $false
+        Stop-Busy 'Sign-in failed'
+        Show-ErrorBox $_.Exception.Message
+    }
+})
+
+# Offboarding user mode - its own handler, with the condition inside.
+$script:MainForm.Add_Shown({
+    if ($ManageUser) { Initialize-OffboardUserMode }
 })
 
 [void]$script:MainForm.ShowDialog()

@@ -2580,29 +2580,6 @@ Apply-MSToolkitSharedTheme -Root $MainForm
 
 Write-AppLog 'Microsoft 365 Group Compare started.'
 
-# Offboard User passes -AutoConnect and -ManageUser so this opens ready to work:
-# sign in, then straight into Manage User Groups with that user loaded.
-if ($AutoConnect -or $ManageUser) {
-    $MainForm.Add_Shown({
-        try {
-            if (-not ($null -ne (Get-MgContext))) {
-                Write-AppLog 'Connecting automatically...'
-                Connect-M365Graph
-            }
-
-            if ($ManageUser -and ($null -ne (Get-MgContext))) {
-                Write-AppLog "Opening Manage User Groups for $ManageUser."
-                Show-SecurityGroupManager -PrefillUser $ManageUser
-            }
-            elseif ($ManageUser) {
-                Write-AppLog 'Not connected, so Manage User Groups was not opened. Connect, then open it yourself.' 'WARN'
-            }
-        }
-        catch {
-            Write-AppLog "Automatic start-up failed: $($_.Exception.Message)" 'ERROR'
-        }
-    })
-}
 Write-AppLog 'Only direct, non-dynamic, non-mail-enabled security-group memberships are compared.'
 
 Hide-PowerShellConsole
@@ -2611,5 +2588,32 @@ Hide-PowerShellConsole
 # started with parameters - and so a failure here cannot stop the rest of
 # start-up. Multiple Shown handlers chain.
 $MainForm.Add_Shown({ Register-MSToolkitComboFiltersOn -Root $MainForm })
+
+# Connect on open. Connect-MgGraph signs in silently with the cached Windows account
+# when it can and prompts otherwise. Offboard User also passes -ManageUser, so this
+# then opens Manage User Groups with that user loaded. -AutoConnect is still
+# accepted but no longer needed. Registered at top level, with the conditions
+# inside, so it runs on every launch; registered last, after the rest of start-up.
+$MainForm.Add_Shown({
+    try {
+        # The tool's own flag, not Get-MgContext: that command only exists once
+        # Connect-M365Graph has loaded the Graph module.
+        if (-not $script:GraphConnected) {
+            Write-AppLog 'Connecting automatically...'
+            Connect-M365Graph
+        }
+
+        if ($ManageUser -and $script:GraphConnected) {
+            Write-AppLog "Opening Manage User Groups for $ManageUser."
+            Show-SecurityGroupManager -PrefillUser $ManageUser
+        }
+        elseif ($ManageUser) {
+            Write-AppLog 'Not connected, so Manage User Groups was not opened. Connect, then open it yourself.' 'WARN'
+        }
+    }
+    catch {
+        Write-AppLog "Automatic start-up failed: $($_.Exception.Message)" 'ERROR'
+    }
+})
 
 [void]$MainForm.ShowDialog()

@@ -2294,7 +2294,6 @@ $script:StartupTimer.Add_Tick({
         Test-MSToolkitInteractiveUser
         if (Test-MSToolkitTeamsModule -Quiet) {
             [void](Test-MSToolkitForwardingCmdlets)
-            if (-not $AutoConnect) { Write-Log 'Click Connect to sign in to Microsoft Teams.' Info }
         } else {
             Write-Log 'MicrosoftTeams module not detected for this user. Starting install automatically.' Warning
             Invoke-MSToolkitInstallTeamsModule
@@ -2305,12 +2304,21 @@ $script:StartupTimer.Add_Tick({
         $script:CursorCheckTimer.Start()
     }
 
-    # Opened by Offboard User: after the module check, connect and load the user.
+    # Always connect on open, after the module check above (so a missing module is
+    # installed first). Connect-MicrosoftTeams signs in silently with the cached
+    # Windows account when it can and prompts otherwise. Opened by Offboard User:
+    # also fill in the user and manager, and load the user's forwarding.
+    # -AutoConnect is still accepted but no longer needed.
     if ($ManageUser) { $script:txtFwdUser.Text = $ManageUser }
     if ($Delegate)   { $script:txtFwdTarget.Text = $Delegate }
-    if ($AutoConnect -and $script:ModuleAvailable -ne $false) {
-        Invoke-MSToolkitConnect
-        if ($script:IsConnected -and $ManageUser) { Invoke-MSToolkitLoadForwarding }
+    if ($script:ModuleAvailable -ne $false -and -not $script:IsConnected) {
+        try {
+            Invoke-MSToolkitConnect
+            if ($script:IsConnected -and $ManageUser) { Invoke-MSToolkitLoadForwarding }
+        }
+        catch {
+            Write-Log ('Automatic connect failed: ' + $_.Exception.Message) Error
+        }
     }
 })
 
