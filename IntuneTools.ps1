@@ -1781,6 +1781,26 @@ function Get-SelectedDeviceIds {
     Get-SelectedCellValues -Grid $script:GridDevices -Column 'Id'
 }
 
+# One managed device for an action: from the loaded list when it is there,
+# otherwise read live from Graph, so a device that was never loaded (or was
+# loaded before a re-search) is still named and checked. Returns a hashtable:
+# Device (the object, or $null) and Error (why it could not be read, or $null).
+function Resolve-ActionDevice {
+    param([string]$Id)
+
+    $d = Get-CachedObject -CacheKey 'DeviceRaw' -Id $Id
+    if ($d) { return @{ Device = $d; Error = $null } }
+
+    try {
+        $select = 'id,deviceName,serialNumber,userPrincipalName'
+        $d = Invoke-Graph -Uri "/deviceManagement/managedDevices/$([uri]::EscapeDataString($Id))?`$select=$select" -Raw
+        if (-not $d) { return @{ Device = $null; Error = 'Graph returned no device' } }
+        return @{ Device = $d; Error = $null }
+    } catch {
+        return @{ Device = $null; Error = $_.Exception.Message }
+    }
+}
+
 function Show-DeviceDetail {
     $id = Get-SelectedDeviceId
     if (-not $id) { return }
@@ -1902,10 +1922,19 @@ function Invoke-DeviceAction {
     $ids = Get-SelectedDeviceIds
     if ($ids.Count -eq 0) { Show-InfoBox 'Select one or more devices first.'; return }
 
-    # Build an explicit target list so the action can never hit the wrong machine
+    # Build an explicit target list so the action can never hit the wrong machine.
+    # Every selected device is named - one that isn't in the loaded list is read
+    # live, and one that can't be read is still listed by its ID.
+    $resolved = @{}
     $targets = foreach ($id in $ids) {
-        $d = Get-CachedObject -CacheKey 'DeviceRaw' -Id $id
-        if ($d) { "  $($d.deviceName)  |  serial $($d.serialNumber)  |  $($d.userPrincipalName)" }
+        $r = Resolve-ActionDevice -Id $id
+        $resolved[$id] = $r
+        if ($r.Device) {
+            $d = $r.Device
+            "  $($d.deviceName)  |  serial $($d.serialNumber)  |  $($d.userPrincipalName)"
+        } else {
+            "  $id  |  details could not be read: $($r.Error)"
+        }
     }
     $list = ($targets -join "`r`n")
 
@@ -1918,7 +1947,7 @@ function Invoke-DeviceAction {
     $ok = 0; $fail = 0; $errors = New-Object System.Collections.Generic.List[string]
     Start-Busy "$FriendlyName..."
     foreach ($id in $ids) {
-        $d = Get-CachedObject -CacheKey 'DeviceRaw' -Id $id
+        $d = $resolved[$id].Device
         $name = if ($d) { $d.deviceName } else { $id }
         try {
             try {
@@ -4252,6 +4281,8 @@ function Write-SettingsHelp {
     Add-HelpText $Box 'GroupMember.ReadWrite.All' 'Code' 48
     Add-HelpText $Box 'adding or removing devices and users from Entra groups' 'Note' 72
     Add-HelpText $Box 'Your signed-in account also needs a directory role that can write group membership - Groups Administrator, User Administrator, or ownership of the group. Intune Administrator alone is not enough.' 'Note' 48
+    Add-HelpText $Box 'User.RevokeSessions.All' 'Code' 48
+    Add-HelpText $Box 'Revoke Sign-in Sessions in offboarding user mode' 'Note' 72
     Add-HelpText $Box
 
     Add-HelpText $Box 'OPTIONAL - secrets, add only if you want those tabs to work' 'Body' 24
@@ -5886,21 +5917,36 @@ function Show-OffboardAppWipe {
 }
 
 function Invoke-OffboardRetire {
-    # The existing Retire with its typed confirmation, plus one guard: refuse if
-    # any selected device belongs to someone else. The grid can be re-searched
-    # while the strip is up.
+    # The existing Retire with its typed confirmation, plus one guard: every
+    # selected device must have the offboarded user as its primary user. A device
+    # that isn't in the loaded list (the grid can be re-searched while the strip is
+    # up) has its owner looked up live. Refused, with nothing retired, if any device
+    # belongs to someone else, has no primary user, or can't be looked up.
     if (-not $script:OffboardUser) { Show-InfoBox 'The user could not be resolved - check the strip status.'; return }
     $ids = Get-SelectedDeviceIds
     if ($ids.Count -eq 0) { Show-InfoBox 'Select the user''s devices in the list first.'; return }
 
-    $others = foreach ($id in $ids) {
-        $d = Get-CachedObject -CacheKey 'DeviceRaw' -Id $id
-        if (-not $d -or "$($d.userPrincipalName)" -ine "$($script:OffboardUser.userPrincipalName)") {
-            if ($d) { "  $($d.deviceName) - $($d.userPrincipalName)" } else { "  $id - unknown" }
+    $expected = "$($script:OffboardUser.userPrincipalName)".Trim()
+    if (-not $expected) { Show-InfoBox 'The offboarded user has no UPN - check the strip status.'; return }
+
+    Start-Busy 'Checking device owners...'
+    $refused = foreach ($id in $ids) {
+        $r = Resolve-ActionDevice -Id $id
+        if (-not $r.Device) {
+            "  $id - owner lookup failed: $($r.Error)"
+            continue
+        }
+        $owner = "$($r.Device.userPrincipalName)".Trim()
+        if (-not $owner) {
+            "  $($r.Device.deviceName) - no primary user"
+        } elseif ($owner -ine $expected) {
+            "  $($r.Device.deviceName) - $owner"
         }
     }
-    if (@($others).Count -gt 0) {
-        Show-ErrorBox ("Nothing was retired. These selected devices do not belong to $($script:OffboardUser.userPrincipalName):`r`n`r`n$(@($others) -join "`r`n")")
+    Stop-Busy 'Device owners checked'
+
+    if (@($refused).Count -gt 0) {
+        Show-ErrorBox ("Nothing was retired. Retire only runs on devices whose primary user is $expected. These selected devices were refused:`r`n`r`n$(@($refused) -join "`r`n")")
         return
     }
 
