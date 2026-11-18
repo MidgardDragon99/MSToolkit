@@ -157,7 +157,14 @@ The main branch is `main`. **There is no remote yet.** The `git pull` and
 
 **While changing**
 
-- Edit the files in place.
+- Edit the files in place, **with the Edit tool**. Never edit a script with
+  `perl -i`, `sed -i` or any other bulk in-place shell rewrite: one such
+  command truncated `OffboardUser.ps1` to 0 bytes. When a change is too large
+  for the Edit tool, use a PowerShell script that writes the result to a temp
+  file, checks it parses and has the expected length (line count / size), and
+  only then replaces the original.
+- **Commit before any multi-line restructuring**, so the last good state is
+  always one `git restore` away.
 - Parse-check every edited `.ps1`. Commit in small, working steps with a message
   saying what changed and why.
 - Show the maintainer `git diff` (or a summary of it) before each commit that
