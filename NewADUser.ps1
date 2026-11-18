@@ -1285,6 +1285,126 @@ function Clear-FormFields {
 }
 
 
+# ---------------------------------------------------------------------------
+# Critical-object checks - the same functions as MSToolkit.ps1, so this tool
+# works standalone. Matched on SID / RID and isCriticalSystemObject, never on
+# names (DnsAdmins, which has no well-known RID, is the documented exception).
+# Used by Mirror Groups From: a critical user is never mirrored from, and
+# critical groups are never mirrored onto a new account.
+# ---------------------------------------------------------------------------
+function Get-MSToolkitSidString {
+    param($DirectoryObject)
+
+    if ($null -eq $DirectoryObject -or $null -eq $DirectoryObject.SID) {
+        return ""
+    }
+
+    try {
+        if ($DirectoryObject.SID.PSObject.Properties.Name -contains "Value") {
+            return [string]$DirectoryObject.SID.Value
+        }
+    }
+    catch {
+    }
+
+    return [string]$DirectoryObject.SID
+}
+
+function Get-MSToolkitRidFromSid {
+    param([string]$Sid)
+
+    if ([string]::IsNullOrWhiteSpace($Sid)) {
+        return -1
+    }
+
+    if ($Sid -match '-(\d+)$') {
+        return [int64]$Matches[1]
+    }
+
+    return -1
+}
+
+function Get-MSToolkitCriticalUserReason {
+    param($User)
+
+    $Sid = Get-MSToolkitSidString -DirectoryObject $User
+    $Rid = Get-MSToolkitRidFromSid -Sid $Sid
+
+    switch ($Rid) {
+        500 { return "Built-in Administrator account (RID 500)" }
+        501 { return "Built-in Guest account (RID 501)" }
+        502 { return "KRBTGT account (RID 502)" }
+    }
+
+    if ($User.isCriticalSystemObject -eq $true) {
+        return "Active Directory marks this user as a critical system object"
+    }
+
+    return $null
+}
+
+function Get-MSToolkitCriticalGroupReason {
+    param($Group)
+
+    $Sid = Get-MSToolkitSidString -DirectoryObject $Group
+
+    $BuiltinReasons = @{
+        'S-1-5-32-544' = 'Built-in Administrators group'
+        'S-1-5-32-548' = 'Built-in Account Operators group'
+        'S-1-5-32-549' = 'Built-in Server Operators group'
+        'S-1-5-32-550' = 'Built-in Print Operators group'
+        'S-1-5-32-551' = 'Built-in Backup Operators group'
+        'S-1-5-32-552' = 'Built-in Replicator group'
+    }
+
+    if ($BuiltinReasons.ContainsKey($Sid)) {
+        return $BuiltinReasons[$Sid]
+    }
+
+    $Rid = Get-MSToolkitRidFromSid -Sid $Sid
+    $DomainRidReasons = @{
+        '512' = 'Domain Admins group'
+        '513' = 'Domain Users group'
+        '514' = 'Domain Guests group'
+        '515' = 'Domain Computers group'
+        '516' = 'Domain Controllers group'
+        '517' = 'Cert Publishers group'
+        '518' = 'Schema Admins group'
+        '519' = 'Enterprise Admins group'
+        '520' = 'Group Policy Creator Owners group'
+        '521' = 'Read-only Domain Controllers group'
+        '522' = 'Cloneable Domain Controllers group'
+        '526' = 'Key Admins group'
+        '527' = 'Enterprise Key Admins group'
+    }
+
+    $RidKey = [string]$Rid
+    if ($DomainRidReasons.ContainsKey($RidKey)) {
+        return $DomainRidReasons[$RidKey]
+    }
+
+    if (
+        ([string]$Group.Name -ieq 'DnsAdmins') -or
+        ([string]$Group.SamAccountName -ieq 'DnsAdmins')
+    ) {
+        return 'DNSAdmins group'
+    }
+
+    if ($Group.isCriticalSystemObject -eq $true) {
+        return "Active Directory marks this group as a critical system object"
+    }
+
+    return $null
+}
+
+# The group's name from a distinguished name, keeping escaped commas, for
+# listing a group that could not be read.
+function Get-MSToolkitNameFromDN {
+    param([string]$DistinguishedName)
+    if ($DistinguishedName -match '^CN=((?:\\.|[^,])+)') { return ($Matches[1] -replace '\\(.)', '$1') }
+    return $DistinguishedName
+}
+
 function Show-NewUserConfirmation {
     param(
         [string]$DisplayName,
@@ -1295,6 +1415,7 @@ function Show-NewUserConfirmation {
         [string]$OnMicrosoftMailAliasAddress,
         [string]$OUPath,
         [string]$MirrorSummary,
+        [object[]]$MirrorGroupList = @(),
         [string]$AddressSummary,
         [string]$ManagerSummary
     )
@@ -1417,6 +1538,25 @@ function Show-NewUserConfirmation {
 
     Add-ConfirmationSection "CLONED / MIRRORED SETTINGS"
     Add-ConfirmationField "Mirror Direct Groups From" $MirrorSummary
+
+    # Every group of the mirror user, by name: what will be added, what is
+    # blocked (and why), and what could not be read.
+    foreach ($Entry in @($MirrorGroupList)) {
+        switch ($Entry.Status) {
+            'Allowed' {
+                Add-ConfirmationField "    Add" $Entry.Name
+            }
+            'Blocked' {
+                Add-ConfirmationField "    BLOCKED" "$($Entry.Name) - $($Entry.Reason)" `
+                    ((Get-MSToolkitThemePalette).Danger) ((Get-MSToolkitThemePalette).Danger)
+            }
+            default {
+                Add-ConfirmationField "    NOT READ" "$($Entry.Name) - $($Entry.Reason)" `
+                    ((Get-MSToolkitThemePalette).Warning) ((Get-MSToolkitThemePalette).Warning)
+            }
+        }
+    }
+
     Add-ConfirmationField "Clone Address From" $AddressSummary
     Add-ConfirmationField "Clone Manager From" $ManagerSummary
 
@@ -1535,41 +1675,75 @@ function New-MSToolkitADUser {
 
         $MirrorUser = $null
         $MirrorGroups = @()
+        $MirrorBlocked = @()
+        $MirrorNotRead = @()
+        $MirrorGroupList = @()
 
         if ($MirrorUserSam) {
             try {
                 $MirrorUser = Get-ADUser `
                     -Identity $MirrorUserSam `
                     -Server $Server `
-                    -Properties MemberOf `
+                    -Properties MemberOf,SID,isCriticalSystemObject,DisplayName `
                     -ErrorAction Stop
-
-                if ($MirrorUser.MemberOf) {
-                    $ResolvedMirrorGroups = New-Object System.Collections.Generic.List[object]
-
-                    foreach ($GroupDN in $MirrorUser.MemberOf) {
-                        try {
-                            $ResolvedGroup = Get-ADGroup `
-                                -Identity $GroupDN `
-                                -Server $Server `
-                                -Properties Name,SamAccountName,GroupCategory,GroupScope `
-                                -ErrorAction Stop
-
-                            $ResolvedMirrorGroups.Add($ResolvedGroup)
-                        }
-                        catch {
-                            Write-OutputBox "WARNING: Could not read mirrored group $GroupDN. $($_.Exception.Message)" ([System.Drawing.Color]::DarkOrange)
-                        }
-                    }
-
-                    $MirrorGroups = @($ResolvedMirrorGroups.ToArray() | Sort-Object Name)
-                }
-
-                Write-OutputBox "Mirror user resolved: $($MirrorUser.SamAccountName) - $($MirrorGroups.Count) direct group(s) found."
             }
             catch {
                 Show-Error "Could not find mirror user '$MirrorUserSam' using $Server.`r`n`r`n$($_.Exception.Message)"
                 return
+            }
+
+            # Never mirror from a protected account (checked by SID / RID and
+            # isCriticalSystemObject, so a renamed built-in account is caught).
+            # Refused here, before the confirmation, and nothing is created.
+            $MirrorUserReason = Get-MSToolkitCriticalUserReason -User $MirrorUser
+            if ($MirrorUserReason) {
+                Write-OutputBox "BLOCKED: mirroring groups from $($MirrorUser.SamAccountName) - $MirrorUserReason. No account was created." ((Get-MSToolkitThemePalette).Danger)
+                Show-Error "OPERATION BLOCKED`r`n`r`nGroups cannot be mirrored from $($MirrorUser.SamAccountName).`r`nReason: $MirrorUserReason`r`n`r`nChoose another user to mirror from, or leave Mirror Groups From empty. No account was created."
+                return
+            }
+
+            # Every direct group is read with SID and isCriticalSystemObject and
+            # checked. Allowed groups are added; protected ones are blocked; any
+            # that can't be read are listed, never silently dropped.
+            $Allowed = New-Object System.Collections.Generic.List[object]
+            $Blocked = New-Object System.Collections.Generic.List[object]
+            $NotRead = New-Object System.Collections.Generic.List[object]
+
+            foreach ($GroupDN in @($MirrorUser.MemberOf)) {
+                try {
+                    $ResolvedGroup = Get-ADGroup `
+                        -Identity $GroupDN `
+                        -Server $Server `
+                        -Properties Name,SamAccountName,GroupCategory,GroupScope,SID,isCriticalSystemObject `
+                        -ErrorAction Stop
+
+                    $GroupReason = Get-MSToolkitCriticalGroupReason -Group $ResolvedGroup
+                    if ($GroupReason) {
+                        $Blocked.Add([pscustomobject]@{ Name = $ResolvedGroup.Name; Reason = $GroupReason; Status = 'Blocked' })
+                    }
+                    else {
+                        $Allowed.Add($ResolvedGroup)
+                    }
+                }
+                catch {
+                    $NotRead.Add([pscustomobject]@{ Name = (Get-MSToolkitNameFromDN -DistinguishedName ([string]$GroupDN)); Reason = $_.Exception.Message; Status = 'NotRead' })
+                    Write-OutputBox "WARNING: Could not read mirrored group $GroupDN. $($_.Exception.Message)" ([System.Drawing.Color]::DarkOrange)
+                }
+            }
+
+            $MirrorGroups  = @($Allowed.ToArray() | Sort-Object Name)
+            $MirrorBlocked = @($Blocked.ToArray() | Sort-Object Name)
+            $MirrorNotRead = @($NotRead.ToArray() | Sort-Object Name)
+
+            $MirrorGroupList = @(
+                @($MirrorGroups | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Reason = ''; Status = 'Allowed' } }) +
+                $MirrorBlocked +
+                $MirrorNotRead
+            )
+
+            Write-OutputBox "Mirror user resolved: $($MirrorUser.SamAccountName) - $(@($MirrorUser.MemberOf).Count) direct group(s): $($MirrorGroups.Count) to add, $($MirrorBlocked.Count) blocked, $($MirrorNotRead.Count) not read."
+            foreach ($Entry in $MirrorBlocked) {
+                Write-OutputBox "BLOCKED: $($Entry.Name) - $($Entry.Reason). It will not be mirrored." ((Get-MSToolkitThemePalette).Danger)
             }
         }
 
@@ -1701,7 +1875,7 @@ function New-MSToolkitADUser {
         }
 
         $MirrorSummary = if ($MirrorUser) {
-            "$($MirrorUser.SamAccountName) ($($MirrorGroups.Count) groups)"
+            "$($MirrorUser.SamAccountName) ($($MirrorGroups.Count) to add, $($MirrorBlocked.Count) blocked, $($MirrorNotRead.Count) not read)"
         }
         else {
             "None"
@@ -1730,6 +1904,7 @@ function New-MSToolkitADUser {
             -OnMicrosoftMailAliasAddress $OnMicrosoftMailAliasAddress `
             -OUPath $OUPath `
             -MirrorSummary $MirrorSummary `
+            -MirrorGroupList $MirrorGroupList `
             -AddressSummary $AddressSummary `
             -ManagerSummary $ManagerSummary
 
@@ -1866,6 +2041,20 @@ function New-MSToolkitADUser {
             }
 
             Write-OutputBox "Group mirror complete. Successful: $GroupAddSuccess | Failed: $GroupAddFailed"
+
+            # Repeated here so the record of the run shows what was held back.
+            if ($MirrorBlocked.Count -gt 0) {
+                Write-OutputBox "BLOCKED - not mirrored ($($MirrorBlocked.Count) protected group(s)):" ((Get-MSToolkitThemePalette).Danger)
+                foreach ($Entry in $MirrorBlocked) {
+                    Write-OutputBox "  BLOCKED: $($Entry.Name) - $($Entry.Reason)" ((Get-MSToolkitThemePalette).Danger)
+                }
+            }
+            if ($MirrorNotRead.Count -gt 0) {
+                Write-OutputBox "NOT READ - not mirrored ($($MirrorNotRead.Count) group(s)):" ([System.Drawing.Color]::DarkOrange)
+                foreach ($Entry in $MirrorNotRead) {
+                    Write-OutputBox "  NOT READ: $($Entry.Name) - $($Entry.Reason)" ([System.Drawing.Color]::DarkOrange)
+                }
+            }
         }
 
         $CurrentStep = 'Final verification'
