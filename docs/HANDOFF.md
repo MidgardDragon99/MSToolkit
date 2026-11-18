@@ -271,16 +271,28 @@ assigned at creation so there are no gaps.
   sync (recognises "already running").
 - **Do All Local Actions** - one confirmation; exports groups first; doesn't stop
   at the first failure; names anything outstanding.
-- **Manual steps**, in order after the sync: Entra and Intune (opens IntuneTools
-  in user mode, `-ReuseWindow`); update the ticket and PC decommission (both
-  **Done / Deferred**); Mailbox handover, OneDrive handover, Retention/phone/
-  licences (each opens its tool with `-ManageUser`, `-AutoConnect` and the
-  manager's UPN as `-Delegate`); disabled-OU reminder; MFA; physical access;
-  distro and M365 group removal (Distro / Group Compare with the user loaded);
-  line-of-business systems; file the checklist. **Unverified - check the code**
-  for the exact final order of MFA / access relative to the AD steps.
+- **Step order** (as created in the code; numbers are assigned at creation):
+  1 disable (AD), 2 security groups (AD), 3 clear phone (AD), 4 replicate,
+  5 delta sync (1-5 are what Do All Local Actions runs), 6 Entra and Intune
+  (opens IntuneTools in user mode, `-ReuseWindow`; straight after the sync so
+  sessions are revoked as soon as the disable reaches the cloud), 7 distro groups
+  and 8 M365 groups (Distro / Group Compare with the user loaded), 9 MFA,
+  10 physical access, 11 update the ticket and
+  12 PC decommission (both **Done / Deferred**), 13 Mailbox handover, 14 OneDrive
+  handover, 15 Retention/phone/licences (each opens its tool with `-ManageUser`,
+  `-AutoConnect` and the manager's UPN as `-Delegate`), 16 disabled-OU reminder,
+  17 line-of-business systems, 18 file the checklist. MFA and physical access
+  come after the local AD actions, matching the internal build. Nothing in the
+  code refers to a step by number.
+- **Untick log:** a real click that unticks a step (or a sub-step click that
+  unticks its parent) logs `Step N unticked by hand: <title>`. It hangs off the
+  `Click` event, which code changes to `.Checked` never raise, so Undo's own
+  "step unticked" lines are not duplicated. Number and title are NoteProperties
+  on the checkbox (`StepNumber`, `StepTitle`).
 - **LOADED:** line; a disabled account shows **DISABLED** in a separate red label
-  placed with `TextRenderer.MeasureText`.
+  placed with `TextRenderer.MeasureText`. Redrawn from a fresh AD read after
+  Disable, Clear Phone, Do All Local Actions (`Update-OffboardCurrentUser`) and
+  Undo.
 - **Undo...** - JSON journal per run in `%LOCALAPPDATA%\MSToolkit\Offboard-Undo`,
   flushed after each action. Reverses groups, then attributes, then re-enables
   (unless already disabled before the run). AD only. Before the confirmation

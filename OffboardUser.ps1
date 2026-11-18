@@ -1879,6 +1879,22 @@ function Update-OffboardLoadedLine {
     }
 }
 
+function Update-OffboardCurrentUser {
+    # Re-reads the loaded account from the working DC and redraws the LOADED: line.
+    if (-not $script:CurrentUser) { return }
+
+    try {
+        $script:CurrentUser = Get-ADUser -Identity $script:CurrentUser.DistinguishedName -Server $script:WorkingServer `
+            -Properties SID,Enabled,DisplayName,Description,Title,Department,Manager,telephoneNumber,mobile,DistinguishedName,isCriticalSystemObject `
+            -ErrorAction Stop
+    }
+    catch {
+        Write-AppLog "Could not re-read $($script:CurrentUser.SamAccountName) to refresh the LOADED line: $($_.Exception.Message)" 'WARNING'
+    }
+
+    Update-OffboardLoadedLine
+}
+
 function Test-OffboardSelectionMatches {
     # The box and the loaded account must agree before anything is changed. The
     # picker can be changed without clicking Load, and a failed Load leaves the
@@ -1958,6 +1974,7 @@ function Invoke-DisableOffboardUser {
             -ErrorAction Stop
 
         $script:CurrentUser = $Refreshed
+        Update-OffboardLoadedLine
 
         if ($Refreshed.Enabled) {
             Write-AppLog "The account still reports Enabled on $($script:WorkingServer) after the disable. Check for a replication or permissions problem." 'ERROR'
@@ -2031,6 +2048,7 @@ function Invoke-ClearOffboardPhone {
 
         $script:CurrentUser = Get-ADUser -Identity $User.DistinguishedName -Server $script:WorkingServer `
             -Properties SID,Enabled,DisplayName,Description,Title,Department,Manager,telephoneNumber,mobile,DistinguishedName,isCriticalSystemObject
+        Update-OffboardLoadedLine
 
         Add-OffboardUndoAction -User $User -Type 'ClearPhone' -Details ([ordered]@{
             telephoneNumber = [string]$User.telephoneNumber
@@ -2197,6 +2215,10 @@ function Invoke-OffboardAllLocal {
     }
 
     Write-AppLog '--- Local actions finished ---' 'SUCCESS'
+
+    # Re-read the account so the LOADED: line shows what AD holds now (DISABLED,
+    # phone cleared), not what Load User read before the actions ran.
+    Update-OffboardCurrentUser
 
     if ($Pending.Count -eq 0) {
         Write-AppLog "All local steps completed. Group list saved to $ExportPath." 'SUCCESS'
@@ -4364,6 +4386,9 @@ function New-OffboardStep {
     $Check.Size = New-Object System.Drawing.Size(1060,22)
     $Check.Anchor = "Top,Left,Right"
     $Check.Font = New-Object System.Drawing.Font("Segoe UI Semibold",9.5)
+    # Kept on the box for the "unticked by hand" log line.
+    $Check | Add-Member -NotePropertyName StepNumber -NotePropertyValue $Number
+    $Check | Add-Member -NotePropertyName StepTitle -NotePropertyValue $Title
     $Check.Add_CheckedChanged({ Update-StepProgress })
 
     # Ticking the step itself ticks all of its sub-steps, and clearing it clears
@@ -4373,6 +4398,12 @@ function New-OffboardStep {
         param($ClickSender, $ClickArgs)
 
         try {
+            # Click is a real click (or Space), never a tick changed by code, so
+            # Undo and the actions do not log here - they write their own lines.
+            if (-not $ClickSender.Checked) {
+                Write-AppLog "Step $($ClickSender.StepNumber) unticked by hand: $($ClickSender.StepTitle)"
+            }
+
             $Subs = $ClickSender.Tag
             if ($null -eq $Subs) { return }
 
@@ -4508,7 +4539,14 @@ function New-OffboardStep {
 
                 try {
                     $ClickSender.Checked = -not $ClickSender.Checked
-                    Update-ParentStep -Parent $ClickSender.Tag
+                    $Parent = $ClickSender.Tag
+                    $WasTicked = [bool]($Parent -and $Parent.Checked)
+                    Update-ParentStep -Parent $Parent
+
+                    # Clearing a sub-step by hand unticks its step, so that counts too.
+                    if ($WasTicked -and -not $Parent.Checked) {
+                        Write-AppLog "Step $($Parent.StepNumber) unticked by hand: $($Parent.StepTitle)"
+                    }
                 }
                 catch {
                     Write-AppLog "Sub-step toggle failed: $($_.Exception.Message)" 'ERROR'
@@ -4619,37 +4657,10 @@ function ConvertTo-OffboardLiteral {
     return "'" + ($Text -replace "'", "''") + "'"
 }
 
-# MFA - only when an MFA system is set
-if ($script:OffboardMfaName -or $script:OffboardMfaUrl) {
-    $MfaName = if ($script:OffboardMfaName) { $script:OffboardMfaName } else { 'the MFA system' }
-    $MfaLabels = @(); $MfaActions = @()
-    if ($script:OffboardMfaUrl) {
-        $MfaLabels += "Open $MfaName"
-        $MfaActions += [scriptblock]::Create("Open-OffboardLink -Url $(ConvertTo-OffboardLiteral $script:OffboardMfaUrl) -Label $(ConvertTo-OffboardLiteral $MfaName)")
-    }
-    $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "MFA - disable the user and remove their enrolled devices" `
-        -Instructions "Sign in to $MfaName and work through both parts." `
-        -SubSteps @(
-            "Disable the user in $MfaName.",
-            "Remove their enrolled phone or authenticator devices."
-        ) `
-        -ButtonLabels $MfaLabels `
-        -ButtonActions $MfaActions
-}
-
-# Physical access - only when an access system is set
-if ($script:OffboardAccessName -or $script:OffboardAccessHost) {
-    $AccessName = if ($script:OffboardAccessName) { $script:OffboardAccessName } else { 'the access control system' }
-    $AccessLabels = @(); $AccessActions = @()
-    if ($script:OffboardAccessHost) {
-        $AccessLabels += $(if ($script:OffboardAccessHost -match '^https?://') { "Open $AccessName" } else { "Remote Desktop to $($script:OffboardAccessHost)" })
-        $AccessActions += { Open-OffboardAccessSystem }
-    }
-    $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Physical access - disable the badge or access card" `
-        -Instructions "Disable the user's badge or access card in $AccessName." `
-        -ButtonLabels $AccessLabels `
-        -ButtonActions $AccessActions
-}
+# Order: the local Active Directory actions first (disable, groups, phone,
+# replicate, delta sync - what Do All Local Actions runs); then Entra and Intune
+# straight after the sync; then the distribution and Microsoft 365 group
+# removals; then MFA and physical access; then the rest.
 
 # Disable the AD account
 $script:chkDisable = New-OffboardStep -Number (Get-NextStepNumber) -Title "Active Directory - disable the account" `
@@ -4667,23 +4678,6 @@ $script:chkGroups = New-OffboardStep -Number (Get-NextStepNumber) -Title "Active
         "Removes every security group membership except protected groups. Export first - once these are gone the only record is the CSV."
     ) `
     -ButtonActions @({ Export-OffboardGroups }, { Remove-OffboardGroups })
-
-# Distribution groups
-$null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Remove distribution group memberships" `
-    -Instructions ("Opens M365 Distro Compare, signs in, and loads the departing user in Manage User Groups. Remove them from every distribution group they belong to.") `
-    -Warning "EXPORT THE LIST FIRST - use Export Distribution Groups in the Manage User Groups window before removing anything." `
-    -ButtonLabels @("Open M365 Distro Compare") `
-    -ButtonTips @("Opens, signs in, and loads this user in Manage User Groups automatically. Click Export Distribution Groups BEFORE removing anything - the list is gone once the memberships are.") `
-    -ButtonActions @({ Start-OffboardM365Tool -ScriptName "M365-Distribution-Group-Compare.ps1" -Label "M365 Distro Compare" })
-
-# Microsoft 365 groups
-$null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Remove Microsoft 365 group memberships" `
-    -Instructions ("Opens M365 Group Compare, signs in, and loads the departing user in Manage User Groups. Remove them from their Entra security groups. " +
-        "Groups synced from on-premises AD are handled in the Active Directory step above, not here.") `
-    -Warning "EXPORT THE LIST FIRST - use Export Security Groups in the Manage User Groups window before removing anything." `
-    -ButtonLabels @("Open M365 Group Compare") `
-    -ButtonTips @("Opens, signs in, and loads this user in Manage User Groups automatically. Click Export Security Groups BEFORE removing anything - the list is gone once the memberships are.") `
-    -ButtonActions @({ Start-OffboardM365Tool -ScriptName "M365-Group-Compare.ps1" -Label "M365 Group Compare" })
 
 # Phone numbers
 $script:chkPhone = New-OffboardStep -Number (Get-NextStepNumber) -Title "Active Directory - clear the phone number, if applicable" `
@@ -4736,6 +4730,57 @@ $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Entra and Intune -
         { Start-OffboardM365Tool -ScriptName "IntuneTools.ps1" -Label "IntuneTools" -ReuseWindow -ExtraArguments $script:OffboardIntuneArgs },
         { Open-OffboardLink -Url "https://intune.microsoft.com/#view/Microsoft_Intune_DeviceSettings/DevicesMenu/~/overview" -Label "Intune devices" }
     )
+
+# Distribution groups - after the local actions and Entra/Intune, so the sessions
+# are revoked before the slower cloud group work.
+$null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Remove distribution group memberships" `
+    -Instructions ("Opens M365 Distro Compare, signs in, and loads the departing user in Manage User Groups. Remove them from every distribution group they belong to.") `
+    -Warning "EXPORT THE LIST FIRST - use Export Distribution Groups in the Manage User Groups window before removing anything." `
+    -ButtonLabels @("Open M365 Distro Compare") `
+    -ButtonTips @("Opens, signs in, and loads this user in Manage User Groups automatically. Click Export Distribution Groups BEFORE removing anything - the list is gone once the memberships are.") `
+    -ButtonActions @({ Start-OffboardM365Tool -ScriptName "M365-Distribution-Group-Compare.ps1" -Label "M365 Distro Compare" })
+
+# Microsoft 365 groups
+$null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Remove Microsoft 365 group memberships" `
+    -Instructions ("Opens M365 Group Compare, signs in, and loads the departing user in Manage User Groups. Remove them from their Entra security groups. " +
+        "Groups synced from on-premises AD are handled in the Active Directory step above, not here.") `
+    -Warning "EXPORT THE LIST FIRST - use Export Security Groups in the Manage User Groups window before removing anything." `
+    -ButtonLabels @("Open M365 Group Compare") `
+    -ButtonTips @("Opens, signs in, and loads this user in Manage User Groups automatically. Click Export Security Groups BEFORE removing anything - the list is gone once the memberships are.") `
+    -ButtonActions @({ Start-OffboardM365Tool -ScriptName "M365-Group-Compare.ps1" -Label "M365 Group Compare" })
+
+# MFA - after the local actions, Entra/Intune and the cloud group steps. Only
+# when an MFA system is set.
+if ($script:OffboardMfaName -or $script:OffboardMfaUrl) {
+    $MfaName = if ($script:OffboardMfaName) { $script:OffboardMfaName } else { 'the MFA system' }
+    $MfaLabels = @(); $MfaActions = @()
+    if ($script:OffboardMfaUrl) {
+        $MfaLabels += "Open $MfaName"
+        $MfaActions += [scriptblock]::Create("Open-OffboardLink -Url $(ConvertTo-OffboardLiteral $script:OffboardMfaUrl) -Label $(ConvertTo-OffboardLiteral $MfaName)")
+    }
+    $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "MFA - disable the user and remove their enrolled devices" `
+        -Instructions "Sign in to $MfaName and work through both parts." `
+        -SubSteps @(
+            "Disable the user in $MfaName.",
+            "Remove their enrolled phone or authenticator devices."
+        ) `
+        -ButtonLabels $MfaLabels `
+        -ButtonActions $MfaActions
+}
+
+# Physical access - straight after MFA. Only when an access system is set.
+if ($script:OffboardAccessName -or $script:OffboardAccessHost) {
+    $AccessName = if ($script:OffboardAccessName) { $script:OffboardAccessName } else { 'the access control system' }
+    $AccessLabels = @(); $AccessActions = @()
+    if ($script:OffboardAccessHost) {
+        $AccessLabels += $(if ($script:OffboardAccessHost -match '^https?://') { "Open $AccessName" } else { "Remote Desktop to $($script:OffboardAccessHost)" })
+        $AccessActions += { Open-OffboardAccessSystem }
+    }
+    $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Physical access - disable the badge or access card" `
+        -Instructions "Disable the user's badge or access card in $AccessName." `
+        -ButtonLabels $AccessLabels `
+        -ButtonActions $AccessActions
+}
 
 # The ticket, so other teams can start
 $null = New-OffboardStep -Number (Get-NextStepNumber) -Title "Update the offboarding ticket" -DoneDeferred `
