@@ -1,0 +1,5 @@
+;!@Install@!UTF-8!
+Title="Uninstall MSToolkit"
+GUIMode="2"
+RunProgram="uninstall.cmd"
+;!@InstallEnd@!

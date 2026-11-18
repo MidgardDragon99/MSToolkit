@@ -1,0 +1,12 @@
+# Text files are stored with LF in the repository and checked out with CRLF on
+# every machine, so .bat/.cmd always run in cmd and PowerShell 5.1 gets CRLF.
+* text=auto eol=crlf
+
+# Binary - never converted
+*.exe binary
+*.ico binary
+*.lnk binary
+*.docx binary
+*.7z binary
+*.zip binary
+*.intunewin binary

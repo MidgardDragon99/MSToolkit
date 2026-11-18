@@ -1,0 +1,20 @@
+# Build outputs - rebuilt from source, never committed
+*.7z
+*-Install.exe
+*-Uninstall.exe
+*.intunewin
+MSToolkit.EXE
+*.zip
+
+# Logs
+Logs/
+*.log
+
+# Microsoft's packaging tool - not ours to redistribute
+IntuneWinAppUtil.exe
+
+# Shortcuts carry the creating account's SID; the installer makes its own
+*.lnk
+
+# Local setup notes - not part of the project
+MSToolkit-Project-Setup-Brief.md
