@@ -17,6 +17,160 @@ param(
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# ---------------------------------------------------------------------------
+# Parent window link. The same block is in every tool that MSToolkit or Offboard
+# User starts. The tool that starts this one passes -ParentWindow (its window
+# handle, as a number) and -ParentPid (its process id). While this window is open
+# the parent is kept directly behind it; when this window closes the parent comes
+# back to the front, rather than whatever Windows picks (often the sign-in
+# browser). Before every use the handle is checked to still be a window owned by
+# that process, so a closed parent or a reused handle makes every call a no-op,
+# as does starting the tool on its own.
+# ---------------------------------------------------------------------------
+if (-not ("MSToolkitParentLink.Native" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace MSToolkitParentLink
+{
+    public static class Native
+    {
+        [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+        [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+        [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(int dwProcessId);
+        [DllImport("user32.dll")] private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+        [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+
+        private const int SW_RESTORE = 9;
+        private const uint SWP_NOSIZE_NOMOVE_NOACTIVATE = 0x0013;
+        private const int ASFW_ANY = -1;
+        private const byte VK_MENU = 0x12;
+        private const uint KEYEVENTF_KEYUP = 0x0002;
+
+        private static IntPtr parent = IntPtr.Zero;
+        private static uint parentPid = 0;
+
+        public static void SetParent(long handle, int pid)
+        {
+            if (handle <= 0 || pid <= 0) return;
+            parent = new IntPtr(handle);
+            parentPid = (uint)pid;
+        }
+
+        public static bool HasParent()
+        {
+            if (parent == IntPtr.Zero || !IsWindow(parent)) return false;
+            uint pid = 0;
+            GetWindowThreadProcessId(parent, out pid);
+            return pid == parentPid;
+        }
+
+        // Puts the parent directly behind the given window. Nothing is activated or
+        // moved, and a parent the user has minimised stays minimised.
+        public static void KeepBehind(IntPtr child)
+        {
+            if (child == IntPtr.Zero || !HasParent() || IsIconic(parent)) return;
+            SetWindowPos(parent, child, 0, 0, 0, 0, SWP_NOSIZE_NOMOVE_NOACTIVATE);
+        }
+
+        // Called while this window still has the foreground (FormClosing), which is
+        // when Windows lets it hand the foreground on.
+        public static bool BringParentForward()
+        {
+            if (!HasParent()) return false;
+            AllowSetForegroundWindow(ASFW_ANY);
+            if (IsIconic(parent)) ShowWindow(parent, SW_RESTORE);
+            return SetForegroundWindow(parent);
+        }
+
+        public static bool IsForeground(IntPtr window)
+        {
+            return window != IntPtr.Zero && GetForegroundWindow() == window;
+        }
+
+        // Brings a window to the front from the background: attach to the
+        // foreground window's input thread and raise it, then a synthetic Alt key
+        // (which lifts the foreground lock). True once it is in front.
+        public static bool Raise(IntPtr window)
+        {
+            if (window == IntPtr.Zero) return false;
+            if (IsIconic(window)) ShowWindow(window, SW_RESTORE);
+            if (GetForegroundWindow() == window) return true;
+
+            IntPtr foreground = GetForegroundWindow();
+            uint foregroundPid = 0;
+            uint foregroundThread = 0;
+            if (foreground != IntPtr.Zero) foregroundThread = GetWindowThreadProcessId(foreground, out foregroundPid);
+            uint thisThread = GetCurrentThreadId();
+            bool attached = false;
+            try
+            {
+                if (foregroundThread != 0 && foregroundThread != thisThread)
+                    attached = AttachThreadInput(thisThread, foregroundThread, true);
+                BringWindowToTop(window);
+                SetForegroundWindow(window);
+            }
+            finally
+            {
+                if (attached) AttachThreadInput(thisThread, foregroundThread, false);
+            }
+            if (GetForegroundWindow() == window) return true;
+
+            keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+            keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            SetForegroundWindow(window);
+            return GetForegroundWindow() == window;
+        }
+    }
+}
+"@
+}
+
+try { [MSToolkitParentLink.Native]::SetParent([long]$ParentWindow, [int]$ParentPid) } catch { }
+
+function Update-MSToolkitParentBehind {
+    param($Form)
+    try {
+        if ($Form -and -not $Form.IsDisposed) { [MSToolkitParentLink.Native]::KeepBehind($Form.Handle) }
+    }
+    catch { }
+}
+
+function Show-MSToolkitParentOnClose {
+    param([bool]$Cancelled)
+    if ($Cancelled) { return }
+    try { [void][MSToolkitParentLink.Native]::BringParentForward() } catch { }
+}
+
+function Invoke-MSToolkitRaiseAfterSignIn {
+    # A Microsoft sign-in leaves the browser or sign-in window in front. Give it a
+    # moment to finish taking focus, then bring this window back and put the parent
+    # behind it again. Escalates: attach + raise, Alt key, then TopMost on and off.
+    param($Form)
+    try {
+        if (-not $Form -or $Form.IsDisposed -or -not $Form.Visible) { return }
+        if (-not [MSToolkitParentLink.Native]::IsForeground($Form.Handle)) {
+            Start-Sleep -Milliseconds 300
+            if (-not [MSToolkitParentLink.Native]::Raise($Form.Handle)) {
+                $WasTopMost = $Form.TopMost
+                $Form.TopMost = $true
+                $Form.Activate()
+                $Form.TopMost = $WasTopMost
+            }
+        }
+        [MSToolkitParentLink.Native]::KeepBehind($Form.Handle)
+    }
+    catch { }
+}
+
 
 # ===========================================================================
 #  M365-Exchange-Online-Tools.ps1
