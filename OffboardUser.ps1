@@ -23,7 +23,12 @@ param(
     [string]$Server,
 
     [ValidateSet("Light","Dark")]
-    [string]$ThemeMode
+    [string]$ThemeMode,
+
+    # Set by the tool that starts this one: its window handle and process id (see
+    # "Parent window link" below).
+    [long]$ParentWindow = 0,
+    [int]$ParentPid = 0
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -3508,22 +3513,39 @@ function Start-MSToolkitM365Tool {
         $script:OffboardToolProcesses.Remove($ScriptFile)
     }
 
+    $Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`""
+
+    if ($ManageUser) {
+        $Arguments += " -AutoConnect -ManageUser `"$ManageUser`""
+    }
+    if ($Delegate) {
+        $Arguments += " -Delegate `"$Delegate`""
+    }
+    $Arguments += $ExtraArguments
+
+    # This window's handle and process id, so the tool keeps it directly behind
+    # itself and brings it back to the front when it closes.
+    try {
+        if ($script:MainForm -and -not $script:MainForm.IsDisposed -and $script:MainForm.IsHandleCreated) {
+            $Arguments += " -ParentWindow $($script:MainForm.Handle.ToInt64()) -ParentPid $PID"
+        }
+    }
+    catch { }
+
+    # Start-Process -Credential (CreateProcessWithLogonW) fails past about 1024
+    # characters with only "The parameter is incorrect", so check first.
+    $PowerShellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    if (("`"$PowerShellExe`" " + $Arguments).Length -gt 1000) {
+        Write-OffboardOutput "ERROR: $ToolName was not started - its command line is too long for Windows to start it as another account ($($Arguments.Length) characters)." ([System.Drawing.Color]::Red)
+        return
+    }
+
     Write-OffboardOutput "Signing in to launch $ToolName."
 
     [void](Invoke-MSToolkitAsSignedInUser -Purpose $ToolName -Launch {
         param($Credential)
 
         Write-OffboardOutput "Launching $ToolName as: $($Credential.UserName)"
-
-        $Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`""
-
-        if ($ManageUser) {
-            $Arguments += " -AutoConnect -ManageUser `"$ManageUser`""
-        }
-        if ($Delegate) {
-            $Arguments += " -Delegate `"$Delegate`""
-        }
-        $Arguments += $ExtraArguments
 
         $Process = Start-Process powershell.exe `
             -Credential $Credential `
@@ -4501,7 +4523,107 @@ $script:lblUserState.Tag = "LoadedUser"
 $pnlUser.Controls.Add($script:lblUserState)
 
 # --- the checklist itself -------------------------------------------------
-$pnlSteps = New-Object System.Windows.Forms.Panel
+
+# Scrolling panel and form that don't jump on a click. A stock AutoScroll
+# container scrolls the clicked control into view, so clicking a checkbox or field
+# near an edge moves the whole page under the pointer. These two keep the scroll
+# position for clicks: ScrollToControl stays put while a mouse button is down
+# (Tab and the keyboard still scroll a focused control into view), and any change
+# that still happens between MouseDown and MouseUp is put back, at once and again
+# after pending layout. Controls added later are hooked too.
+if (-not ("MSToolkitScroll.StablePanel" -as [type])) {
+    Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @"
+using System;
+using System.Drawing;
+using System.Windows.Forms;
+
+namespace MSToolkitScroll
+{
+    public sealed class ClickScrollGuard
+    {
+        private readonly ScrollableControl owner;
+        private Point saved;
+        private bool down;
+
+        public ClickScrollGuard(ScrollableControl owner) { this.owner = owner; }
+
+        public void Hook(Control control)
+        {
+            if (control == null) return;
+            control.MouseDown += OnMouseDown;
+            control.MouseUp += OnMouseUp;
+            control.ControlAdded += OnControlAdded;
+            foreach (Control child in control.Controls) Hook(child);
+        }
+
+        private void OnControlAdded(object sender, ControlEventArgs e) { Hook(e.Control); }
+
+        private void OnMouseDown(object sender, MouseEventArgs e)
+        {
+            saved = owner.AutoScrollPosition;
+            down = true;
+        }
+
+        private void OnMouseUp(object sender, MouseEventArgs e)
+        {
+            if (!down) return;
+            down = false;
+            if (owner.AutoScrollPosition == saved) return;
+
+            // AutoScrollPosition reads negative and is set with positive values.
+            Point target = new Point(-saved.X, -saved.Y);
+            owner.AutoScrollPosition = target;
+            if (owner.IsHandleCreated)
+            {
+                owner.BeginInvoke((MethodInvoker)delegate { owner.AutoScrollPosition = target; });
+            }
+        }
+
+        public static bool MouseIsDown()
+        {
+            return Control.MouseButtons != MouseButtons.None;
+        }
+    }
+
+    public class StablePanel : Panel
+    {
+        private readonly ClickScrollGuard guard;
+        public StablePanel() { guard = new ClickScrollGuard(this); }
+
+        protected override Point ScrollToControl(Control activeControl)
+        {
+            if (ClickScrollGuard.MouseIsDown()) return DisplayRectangle.Location;
+            return base.ScrollToControl(activeControl);
+        }
+
+        protected override void OnControlAdded(ControlEventArgs e)
+        {
+            base.OnControlAdded(e);
+            guard.Hook(e.Control);
+        }
+    }
+
+    public class StableForm : Form
+    {
+        private readonly ClickScrollGuard guard;
+        public StableForm() { guard = new ClickScrollGuard(this); }
+
+        protected override Point ScrollToControl(Control activeControl)
+        {
+            if (ClickScrollGuard.MouseIsDown()) return DisplayRectangle.Location;
+            return base.ScrollToControl(activeControl);
+        }
+
+        protected override void OnControlAdded(ControlEventArgs e)
+        {
+            base.OnControlAdded(e);
+            guard.Hook(e.Control);
+        }
+    }
+}
+"@
+}
+$pnlSteps = New-Object MSToolkitScroll.StablePanel
 $pnlSteps.Dock = "Fill"
 $pnlSteps.AutoScroll = $true
 $pnlSteps.Padding = New-Object System.Windows.Forms.Padding(10)
@@ -5131,5 +5253,13 @@ $MainForm.Add_Shown({
 # started with parameters - and so a failure here cannot stop the rest of
 # start-up. Multiple Shown handlers chain.
 $MainForm.Add_Shown({ Register-MSToolkitComboFiltersOn -Root $MainForm })
+
+# Parent window link: the window that started this one stays directly behind it,
+# and comes back to the front when this one closes. Its own handlers, registered
+# last so that any FormClosing handler that cancels the close runs first. Each is
+# a no-op when there is no parent.
+$MainForm.Add_Shown({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$MainForm.Add_Activated({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$MainForm.Add_FormClosing({ param($LinkSender, $LinkArgs) Show-MSToolkitParentOnClose -Cancelled $LinkArgs.Cancel })
 
 [void]$MainForm.ShowDialog()

@@ -16,7 +16,12 @@ param(
     [string]$Server,
 
     [ValidateSet("Light","Dark")]
-    [string]$ThemeMode
+    [string]$ThemeMode,
+
+    # Set by the tool that starts this one: its window handle and process id (see
+    # "Parent window link" below).
+    [long]$ParentWindow = 0,
+    [int]$ParentPid = 0
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -2852,5 +2857,13 @@ $MainForm.Add_Shown({
 # started with parameters - and so a failure here cannot stop the rest of
 # start-up. Multiple Shown handlers chain.
 $MainForm.Add_Shown({ Register-MSToolkitComboFiltersOn -Root $MainForm })
+
+# Parent window link: the window that started this one stays directly behind it,
+# and comes back to the front when this one closes. Its own handlers, registered
+# last so that any FormClosing handler that cancels the close runs first. Each is
+# a no-op when there is no parent.
+$MainForm.Add_Shown({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$MainForm.Add_Activated({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$MainForm.Add_FormClosing({ param($LinkSender, $LinkArgs) Show-MSToolkitParentOnClose -Cancelled $LinkArgs.Cancel })
 
 [void]$MainForm.ShowDialog()

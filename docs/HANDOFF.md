@@ -172,6 +172,37 @@ rather than writing to the output box.
 
 Windows are moved to the console's monitor (`Move-ProcessWindowsToMSToolkitMonitor`).
 
+**Parent window link.** The console and Offboard User add `-ParentWindow <handle
+as a decimal number> -ParentPid <process id>` to every tool they start
+(`Get-MSToolkitParentArguments` in the console; inline in Offboard's
+`Start-MSToolkitM365Tool`). Every child declares both (`[long]`/`[int]`, default
+0) - an unknown parameter stops a tool starting, so a new child must declare them
+too. The same "Parent window link" block is in each child: a small C# class
+(`MSToolkitParentLink.Native`) plus three functions, and three top-level handlers
+registered just before `ShowDialog`:
+
+- Shown and Activated: `SetWindowPos(parent, child, SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE)`
+  puts the parent directly behind the child. A minimised parent stays minimised.
+- FormClosing (skipped if an earlier handler cancelled): `AllowSetForegroundWindow(ASFW_ANY)`,
+  restore the parent if minimised, `SetForegroundWindow(parent)`. Done in
+  FormClosing because the closing window still has the foreground then; the
+  parent calling `Activate()` after the child exits is refused by the foreground
+  lock.
+- Before every call the handle is checked with `IsWindow` and
+  `GetWindowThreadProcessId` against `-ParentPid`, so a closed parent or a reused
+  handle makes it a no-op. A tool started on its own has no parent.
+
+After a Microsoft sign-in each M365 tool calls `Invoke-MSToolkitRaiseAfterSignIn`
+(after its sign-in window watcher stops): if it isn't in front, wait 300 ms, then
+attach to the foreground thread + `BringWindowToTop`/`SetForegroundWindow`, then a
+synthetic Alt key, then TopMost on/off; then the parent goes behind it again.
+IntuneTools keeps its own `Show-MainWindow` (the same steps).
+
+`Start-Process -Credential` (CreateProcessWithLogonW) fails past about 1024
+characters with only "The parameter is incorrect", so both launchers refuse a
+command line over 1000 characters with a clear message. Pass paths and ids, never
+data, on a command line.
+
 ### M365 sign-in
 
 The console runs as admin, but M365 work must run as the standard account.
@@ -438,7 +469,7 @@ Reports, Settings. Signs in with the tenant's own app registration, delegated
 
 ---
 
-## 5. Two UI rules
+## 5. UI rules
 
 ### No automatic domain prefix
 
@@ -466,6 +497,28 @@ expected and which attribute or source it maps to.
 
 Before publishing, search every Settings hint, tooltip and example for anything
 that describes a naming pattern or a real value.
+
+### Scrolling containers that hold clickable controls
+
+A stock AutoScroll panel or form scrolls the clicked control into view, so a
+click near an edge moves the page under the pointer. Offboard User's step list
+(`MSToolkitScroll.StablePanel`) and the Create New User form
+(`MSToolkitScroll.StableForm`) use subclasses that: return
+`DisplayRectangle.Location` from `ScrollToControl` while a mouse button is down
+(Tab and the keyboard still scroll a focused control into view); and save
+`AutoScrollPosition` on every child's MouseDown and put it back on MouseUp if it
+moved, at once and again via `BeginInvoke`. `OnControlAdded` hooks controls added
+later. The override alone was not enough: clicks still moved the page. Use these
+for any new long scrolling window.
+
+### Waiting loops inside a Shown handler
+
+A `while (...) { DoEvents }` wait inside a Shown handler blocks the close: Windows
+only completes it once the handler returns. Set a flag in FormClosing and leave
+the loop on it (IntuneTools: `$script:CloseRequested` / `$script:SignInCancelled`
+end the browser sign-in wait; the listener closes in `finally`). Likewise a timer
+fires inside any `DoEvents`: anything a timer could start must check a busy flag
+set by long actions that pump messages.
 
 ---
 

@@ -77,7 +77,12 @@ param(
 
     [string]$Delegate,
 
-    [switch]$AutoConnect
+    [switch]$AutoConnect,
+
+    # Set by the tool that starts this one: its window handle and process id (see
+    # "Parent window link" below).
+    [long]$ParentWindow = 0,
+    [int]$ParentPid = 0
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -1651,6 +1656,7 @@ function Invoke-MSToolkitConnect {
         } finally {
             Stop-MSToolkitSignInWindowWatch
             Hide-MSToolkitConsoleAfterSignIn
+            Invoke-MSToolkitRaiseAfterSignIn -Form $script:Form
         }
 
         $script:IsConnected = $true
@@ -2502,5 +2508,13 @@ $script:Form.Add_FormClosing({
 
 Update-MSToolkitPreview
 Clear-MSToolkitConnectionDisplay
+# Parent window link: the window that started this one stays directly behind it,
+# and comes back to the front when this one closes. Its own handlers, registered
+# last so that any FormClosing handler that cancels the close runs first. Each is
+# a no-op when there is no parent.
+$script:Form.Add_Shown({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$script:Form.Add_Activated({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$script:Form.Add_FormClosing({ param($LinkSender, $LinkArgs) Show-MSToolkitParentOnClose -Cancelled $LinkArgs.Cancel })
+
 [void]$script:Form.ShowDialog()
 $script:Form.Dispose()

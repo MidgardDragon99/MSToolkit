@@ -448,6 +448,8 @@ The **M365** buttons, **Intune Tools** and the **Logs** file actions run as your
 
 ## 10. Companion tools
 
+A tool opened from the console (or from Offboard User) keeps the window that opened it directly behind it, and brings that window back to the front when it closes, rather than leaving you in the sign-in browser. After a Microsoft sign-in, each Microsoft 365 tool comes back to the front by itself.
+
 ### Create New AD User
 
 Creates an AD user and fills in the Microsoft 365-related attributes.

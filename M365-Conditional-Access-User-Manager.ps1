@@ -1,7 +1,12 @@
 ﻿[CmdletBinding()]
 param(
     [ValidateSet("Light","Dark")]
-    [string]$ThemeMode
+    [string]$ThemeMode,
+
+    # Set by the tool that starts this one: its window handle and process id (see
+    # "Parent window link" below).
+    [long]$ParentWindow = 0,
+    [int]$ParentPid = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1158,6 +1163,7 @@ function Connect-ConditionalAccessGraph {
             -ErrorAction Stop | Out-Null
 
         Stop-SignInWindowWatcher
+        Invoke-MSToolkitRaiseAfterSignIn -Form $script:MainForm
         $context = Get-MgContext
         $script:GraphConnected = $true
         $script:lblConnection.Text = "Connected: $($context.Account)"
@@ -2337,5 +2343,13 @@ $MainForm.Add_Shown({
         Write-AppLog "Automatic connect failed: $($_.Exception.Message)" 'ERROR'
     }
 })
+
+# Parent window link: the window that started this one stays directly behind it,
+# and comes back to the front when this one closes. Its own handlers, registered
+# last so that any FormClosing handler that cancels the close runs first. Each is
+# a no-op when there is no parent.
+$MainForm.Add_Shown({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$MainForm.Add_Activated({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$MainForm.Add_FormClosing({ param($LinkSender, $LinkArgs) Show-MSToolkitParentOnClose -Cancelled $LinkArgs.Cancel })
 
 [void]$MainForm.ShowDialog()

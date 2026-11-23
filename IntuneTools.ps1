@@ -28,7 +28,11 @@ param(
     # cannot stop this tool starting.
     [string]$ManageUser,
     [switch]$AutoConnect,
-    [string]$Delegate
+    [string]$Delegate,
+    # Set by the tool that starts this one: its window handle and process id (see
+    # "Parent window link" below).
+    [long]$ParentWindow = 0,
+    [int]$ParentPid = 0
 )
 
 [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null
@@ -1177,7 +1181,7 @@ function Show-MainWindow {
     #      SetForegroundWindow again;
     #   3. TopMost on -> Activate() -> TopMost off.
     # A minimised window is restored first. Nothing here throws.
-    if (-not $script:MainForm -or $script:MainForm.IsDisposed) { return }
+    if (-not $script:MainForm -or $script:MainForm.IsDisposed -or $script:CloseRequested) { return }
     try {
         $handle = $script:MainForm.Handle
 
@@ -6158,6 +6162,19 @@ $script:MainForm.Add_Resize({
     }
 })
 
+# Closing the window while the browser sign-in is waiting. The wait loop runs
+# inside a Shown handler, and Windows only finishes the close once that handler
+# returns, so without this the window stayed half-closed until the 10-minute
+# sign-in timeout. The flag ends the wait; the listener is closed in its finally
+# block, and the window is not brought back to the front.
+$script:CloseRequested = $false
+$script:MainForm.Add_FormClosing({
+    param($ClosingSender, $ClosingArgs)
+    if ($ClosingArgs.Cancel) { return }
+    $script:CloseRequested = $true
+    $script:SignInCancelled = $true
+})
+
 $script:MainForm.Add_FormClosed({
     # a WinForms timer outlives the script if it is left running, and keeps
     # firing inside the host session - always tear ours down on exit
@@ -6219,6 +6236,14 @@ $script:MainForm.Add_Shown({
 $script:MainForm.Add_Shown({
     if ($ManageUser) { Initialize-OffboardUserMode }
 })
+
+# Parent window link: the window that started this one stays directly behind it,
+# and comes back to the front when this one closes. Its own handlers, registered
+# last so that any FormClosing handler that cancels the close runs first. Each is
+# a no-op when there is no parent.
+$script:MainForm.Add_Shown({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$script:MainForm.Add_Activated({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$script:MainForm.Add_FormClosing({ param($LinkSender, $LinkArgs) Show-MSToolkitParentOnClose -Cancelled $LinkArgs.Cancel })
 
 [void]$script:MainForm.ShowDialog()
 $script:MainForm.Dispose()

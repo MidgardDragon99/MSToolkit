@@ -9,7 +9,12 @@ param(
     # Groups window, and load this user straight away.
     [string]$ManageUser,
 
-    [switch]$AutoConnect
+    [switch]$AutoConnect,
+
+    # Set by the tool that starts this one: its window handle and process id (see
+    # "Parent window link" below).
+    [long]$ParentWindow = 0,
+    [int]$ParentPid = 0
 )
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -1197,6 +1202,7 @@ function Connect-M365Exchange {
     }
     finally {
         Stop-M365AuthWindowWatcher
+        Invoke-MSToolkitRaiseAfterSignIn -Form $script:MainForm
         Set-BusyState -Busy $false
     }
 }
@@ -2522,5 +2528,13 @@ $MainForm.Add_Shown({
         Write-AppLog "Automatic start-up failed: $($_.Exception.Message)" 'ERROR'
     }
 })
+
+# Parent window link: the window that started this one stays directly behind it,
+# and comes back to the front when this one closes. Its own handlers, registered
+# last so that any FormClosing handler that cancels the close runs first. Each is
+# a no-op when there is no parent.
+$MainForm.Add_Shown({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$MainForm.Add_Activated({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$MainForm.Add_FormClosing({ param($LinkSender, $LinkArgs) Show-MSToolkitParentOnClose -Cancelled $LinkArgs.Cancel })
 
 [void]$MainForm.ShowDialog()

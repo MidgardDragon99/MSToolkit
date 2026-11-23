@@ -3,7 +3,12 @@ param(
     [ValidateSet("Light","Dark")]
     [string]$ThemeMode,
 
-    [string]$DefaultServer
+    [string]$DefaultServer,
+
+    # Set by the tool that starts this one: its window handle and process id (see
+    # "Parent window link" below).
+    [long]$ParentWindow = 0,
+    [int]$ParentPid = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -245,6 +250,106 @@ namespace MSToolkitParentLink
 }
 
 try { [MSToolkitParentLink.Native]::SetParent([long]$ParentWindow, [int]$ParentPid) } catch { }
+
+# Scrolling panel and form that don't jump on a click. A stock AutoScroll
+# container scrolls the clicked control into view, so clicking a checkbox or field
+# near an edge moves the whole page under the pointer. These two keep the scroll
+# position for clicks: ScrollToControl stays put while a mouse button is down
+# (Tab and the keyboard still scroll a focused control into view), and any change
+# that still happens between MouseDown and MouseUp is put back, at once and again
+# after pending layout. Controls added later are hooked too.
+if (-not ("MSToolkitScroll.StablePanel" -as [type])) {
+    Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @"
+using System;
+using System.Drawing;
+using System.Windows.Forms;
+
+namespace MSToolkitScroll
+{
+    public sealed class ClickScrollGuard
+    {
+        private readonly ScrollableControl owner;
+        private Point saved;
+        private bool down;
+
+        public ClickScrollGuard(ScrollableControl owner) { this.owner = owner; }
+
+        public void Hook(Control control)
+        {
+            if (control == null) return;
+            control.MouseDown += OnMouseDown;
+            control.MouseUp += OnMouseUp;
+            control.ControlAdded += OnControlAdded;
+            foreach (Control child in control.Controls) Hook(child);
+        }
+
+        private void OnControlAdded(object sender, ControlEventArgs e) { Hook(e.Control); }
+
+        private void OnMouseDown(object sender, MouseEventArgs e)
+        {
+            saved = owner.AutoScrollPosition;
+            down = true;
+        }
+
+        private void OnMouseUp(object sender, MouseEventArgs e)
+        {
+            if (!down) return;
+            down = false;
+            if (owner.AutoScrollPosition == saved) return;
+
+            // AutoScrollPosition reads negative and is set with positive values.
+            Point target = new Point(-saved.X, -saved.Y);
+            owner.AutoScrollPosition = target;
+            if (owner.IsHandleCreated)
+            {
+                owner.BeginInvoke((MethodInvoker)delegate { owner.AutoScrollPosition = target; });
+            }
+        }
+
+        public static bool MouseIsDown()
+        {
+            return Control.MouseButtons != MouseButtons.None;
+        }
+    }
+
+    public class StablePanel : Panel
+    {
+        private readonly ClickScrollGuard guard;
+        public StablePanel() { guard = new ClickScrollGuard(this); }
+
+        protected override Point ScrollToControl(Control activeControl)
+        {
+            if (ClickScrollGuard.MouseIsDown()) return DisplayRectangle.Location;
+            return base.ScrollToControl(activeControl);
+        }
+
+        protected override void OnControlAdded(ControlEventArgs e)
+        {
+            base.OnControlAdded(e);
+            guard.Hook(e.Control);
+        }
+    }
+
+    public class StableForm : Form
+    {
+        private readonly ClickScrollGuard guard;
+        public StableForm() { guard = new ClickScrollGuard(this); }
+
+        protected override Point ScrollToControl(Control activeControl)
+        {
+            if (ClickScrollGuard.MouseIsDown()) return DisplayRectangle.Location;
+            return base.ScrollToControl(activeControl);
+        }
+
+        protected override void OnControlAdded(ControlEventArgs e)
+        {
+            base.OnControlAdded(e);
+            guard.Hook(e.Control);
+        }
+    }
+}
+"@
+}
 
 function Update-MSToolkitParentBehind {
     param($Form)
@@ -2374,7 +2479,7 @@ function New-MSToolkitADUser {
     }
 }
 
-$form = New-Object System.Windows.Forms.Form
+$form = New-Object MSToolkitScroll.StableForm
 $form.Text = "Create New AD User - $Domain"
 # Open large by default, but never larger than the screen will allow.
 $PreferredWidth = 1500
@@ -2776,6 +2881,14 @@ Write-StartupField `
     -Label "Full OU Path" `
     -Value "You may paste a full distinguishedName beginning with OU= when needed." `
     -ValueColor $StartupPalette.MutedText
+
+# Parent window link: the window that started this one stays directly behind it,
+# and comes back to the front when this one closes. Its own handlers, registered
+# last so that any FormClosing handler that cancels the close runs first. Each is
+# a no-op when there is no parent.
+$form.Add_Shown({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$form.Add_Activated({ param($LinkSender, $LinkArgs) Update-MSToolkitParentBehind -Form $LinkSender })
+$form.Add_FormClosing({ param($LinkSender, $LinkArgs) Show-MSToolkitParentOnClose -Cancelled $LinkArgs.Cancel })
 
 try {
     $form.ShowDialog() | Out-Null

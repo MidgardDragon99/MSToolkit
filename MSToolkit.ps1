@@ -2848,7 +2848,7 @@ function Launch-OffboardUserScript {
 
         $Process = Start-Process powershell.exe `
             -WorkingDirectory $PSScriptRoot `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`" -Server `"$SelectedServer`"" `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`" -Server `"$SelectedServer`"$(Get-MSToolkitParentArguments)" `
             -PassThru
         Move-ProcessWindowsToMSToolkitMonitor -Process $Process
     }
@@ -2871,7 +2871,7 @@ function Launch-NewADUserScript {
 
         $Process = Start-Process powershell.exe `
             -WorkingDirectory $PSScriptRoot `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`" -DefaultServer `"$SelectedServer`"" `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`" -DefaultServer `"$SelectedServer`"$(Get-MSToolkitParentArguments)" `
             -PassThru
         Move-ProcessWindowsToMSToolkitMonitor -Process $Process
     }
@@ -3460,6 +3460,26 @@ function Invoke-MSToolkitAsSignedInUser {
     }
 }
 
+function Get-MSToolkitParentArguments {
+    # Passed to every tool started from this window, so the tool keeps this window
+    # directly behind it and brings it back to the front when it closes.
+    try {
+        if ($script:form -and -not $script:form.IsDisposed -and $script:form.IsHandleCreated) {
+            return " -ParentWindow $($script:form.Handle.ToInt64()) -ParentPid $PID"
+        }
+    }
+    catch { }
+    return ""
+}
+
+function Test-MSToolkitCommandLineLength {
+    # Start-Process -Credential (CreateProcessWithLogonW) fails past about 1024
+    # characters with only "The parameter is incorrect", so check first.
+    param([string]$Arguments)
+    $PowerShellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    return (("`"$PowerShellExe`" " + $Arguments).Length -le 1000)
+}
+
 function Start-MSToolkitM365Tool {
     param(
         [string]$ToolName,
@@ -3474,6 +3494,13 @@ function Start-MSToolkitM365Tool {
         return
     }
 
+    $Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`"$ExtraArguments$(Get-MSToolkitParentArguments)"
+
+    if (-not (Test-MSToolkitCommandLineLength -Arguments $Arguments)) {
+        Write-OutputBox "ERROR: $ToolName was not started - its command line is too long for Windows to start it as another account ($($Arguments.Length) characters). Shorten the values passed to it in Settings." ([System.Drawing.Color]::Red)
+        return
+    }
+
     Write-OutputBox "Signing in to launch $ToolName."
 
     [void](Invoke-MSToolkitAsSignedInUser -Purpose $ToolName -Launch {
@@ -3484,7 +3511,7 @@ function Start-MSToolkitM365Tool {
         $Process = Start-Process powershell.exe `
             -Credential $Credential `
             -WorkingDirectory $PSScriptRoot `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`"$ExtraArguments" `
+            -ArgumentList $Arguments `
             -PassThru `
             -ErrorAction Stop
 
@@ -3580,7 +3607,7 @@ function Invoke-CompareUserGroupsInTool {
 
         $Process = Start-Process powershell.exe `
             -WorkingDirectory $PSScriptRoot `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -Server `"$Server`" -ThemeMode `"$script:ThemeMode`"" `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -Server `"$Server`" -ThemeMode `"$script:ThemeMode`"$(Get-MSToolkitParentArguments)" `
             -PassThru
         Move-ProcessWindowsToMSToolkitMonitor -Process $Process
     }
@@ -3602,7 +3629,7 @@ function Invoke-InvestigateAccountLockoutInTool {
 
         $Process = Start-Process powershell.exe `
             -WorkingDirectory $PSScriptRoot `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`"" `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -ThemeMode `"$script:ThemeMode`"$(Get-MSToolkitParentArguments)" `
             -PassThru
         Move-ProcessWindowsToMSToolkitMonitor -Process $Process
     }
