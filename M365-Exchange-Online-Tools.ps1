@@ -2647,7 +2647,9 @@ function Invoke-ExoTransportRuleMatch {
 
             # Conditions this tool cannot judge from three fields alone.
             foreach ($Property in 'AttachmentContainsWords','AttachmentExtensionMatchesWords','MessageSizeOver','ContentCharacterSetContainsWords','SenderIpRanges','HasClassification','AnyOfRecipientAddressContainsWords','ExceptIfFrom','ExceptIfSentTo','ExceptIfSubjectContainsWords') {
-                if (@($Rule.$Property).Count -gt 0) { $Unevaluated.Add($Property) }
+                # An unset condition reads as $null, and @($null).Count is 1 -
+                # count only real values.
+                if (@($Rule.$Property | Where-Object { $null -ne $_ -and "$_" -ne '' }).Count -gt 0) { $Unevaluated.Add($Property) }
             }
 
             if ($Reasons.Count -eq 0) { continue }

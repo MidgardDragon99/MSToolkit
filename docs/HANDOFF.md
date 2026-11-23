@@ -522,6 +522,18 @@ that describes a naming pattern or a real value.
     start-up.
 15. **`Get-ADReplicationFailure` keeps old errors** after recovery; only
     `FailureCount` resets.
+16. **`@($null).Count` is 1**, and `foreach ($x in @($null))` runs once. It
+    bites on a real `$null`: a null or missing property, a JSON `null`, a
+    variable set to `$null`. An empty pipeline or a function that returns
+    nothing still gives 0. To count a property's values, filter:
+    `@($Obj.Prop | Where-Object { $null -ne $_ }).Count`.
+17. **Other 5.1 traps** checked across the repo with a syntax-tree scan (none
+    found, keep it that way): `'a', 'b' + 'x'` is `('a','b') + 'x'` (the comma
+    binds first); a parameter named like a script variable shadows it in every
+    function it calls (dynamic scoping); a typed variable (`[string]$x`, also
+    `$script:x` for a script parameter) converts whatever is assigned to it later;
+    an `[ordered]` dictionary indexed with an int indexes by position. Functions
+    loaded with `Invoke-Expression` (offline tests) get an empty `$PSScriptRoot`.
 
 ---
 
